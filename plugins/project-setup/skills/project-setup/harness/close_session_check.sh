@@ -42,13 +42,21 @@ _check_mtime_updated() {
 echo "=== ЧЕКЛИСТ ЗАВЕРШЕНИЯ СЕССИИ ==="
 echo "Окно сессии: $((WINDOW_MINUTES/60)) ч"
 echo ""
-# [team] память разделена по участникам — подставь суффикс: PROGRESS_$WHO.md и т.п.
+# Портируемо: solo=PROGRESS.md, team=PROGRESS_<member>.md. SESSION_MEMBER задаёт явный суффикс;
+# иначе авто-выбор новейшего PROGRESS*.md/SYSTEM_LOG*.md/HANDOFF*.md (ошибка-невозможна > детект).
 WHO="${SESSION_MEMBER:-}"
 SUF=""; [ -n "$WHO" ] && SUF="_$WHO"
+_pick() {  # $1 = базовое имя; печатает путь к файлу для проверки
+  local base="$1"
+  [ -n "$SUF" ] && [ -f "$MEMORY_DIR/${base}${SUF}.md" ] && { echo "$MEMORY_DIR/${base}${SUF}.md"; return; }
+  [ -f "$MEMORY_DIR/${base}.md" ] && { echo "$MEMORY_DIR/${base}.md"; return; }
+  ls -t "$MEMORY_DIR/${base}"*.md 2>/dev/null | head -1
+}
+PROGRESS_F=$(_pick PROGRESS); SYSLOG_F=$(_pick SYSTEM_LOG); HANDOFF_F=$(_pick HANDOFF)
 echo "Блок 1 — Файлы памяти (Правило 9):"
-_check_mtime_updated "$MEMORY_DIR/PROGRESS$SUF.md"   "PROGRESS.md  "
-_check_mtime_updated "$MEMORY_DIR/SYSTEM_LOG$SUF.md" "SYSTEM_LOG.md"
-_check_mtime_updated "$MEMORY_DIR/HANDOFF$SUF.md"    "HANDOFF.md   "
+_check_mtime_updated "${PROGRESS_F:-$MEMORY_DIR/PROGRESS.md}"   "PROGRESS  "
+_check_mtime_updated "${SYSLOG_F:-$MEMORY_DIR/SYSTEM_LOG.md}"   "SYSTEM_LOG"
+_check_mtime_updated "${HANDOFF_F:-$MEMORY_DIR/HANDOFF.md}"     "HANDOFF   "
 
 echo ""
 echo "Блок 2 — Git:"
@@ -96,7 +104,7 @@ done
 
 echo ""
 echo "Блок 4 — HANDOFF содержательный:"
-HANDOFF_FILE="$MEMORY_DIR/HANDOFF$SUF.md"
+HANDOFF_FILE="${HANDOFF_F:-$MEMORY_DIR/HANDOFF$SUF.md}"
 if [ -f "$HANDOFF_FILE" ]; then
   HANDOFF_LINES=$(wc -l < "$HANDOFF_FILE" | tr -d ' ')
   if [ "$HANDOFF_LINES" -lt "10" ]; then

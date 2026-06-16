@@ -1,5 +1,4 @@
 {
-  "_comment": "Фрагмент для .claude/settings.json — секция hooks. Слить с существующим settings.json вручную (или JSON-merge). Не заменять весь файл — там могут быть permissions/env/другие хуки проекта.",
   "hooks": {
     "PreToolUse": [
       {

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Edit(**/Исходники/**)", "Write(**/Исходники/**)", "MultiEdit(**/Исходники/**)",
+      "Edit(**/Проект/Архив/**)", "Write(**/Проект/Архив/**)", "MultiEdit(**/Проект/Архив/**)",
+      "Edit(**/Система/архив/**)", "Write(**/Система/архив/**)", "MultiEdit(**/Система/архив/**)",
+      "Edit(**/*_backup*)", "Write(**/*_backup*)", "MultiEdit(**/*_backup*)",
+      "Edit(**/*_prev*)", "Write(**/*_prev*)", "MultiEdit(**/*_prev*)",
+      "Edit(**/CONSCIOUSNESS.md)", "Write(**/CONSCIOUSNESS.md)", "MultiEdit(**/CONSCIOUSNESS.md)",
+      "Edit(**/CLAUDE.md)", "Write(**/CLAUDE.md)", "MultiEdit(**/CLAUDE.md)",
+      "Edit(**/RULES.md)", "Write(**/RULES.md)", "MultiEdit(**/RULES.md)",
+      "Edit(**/ARCH_PRINCIPLES.md)", "Write(**/ARCH_PRINCIPLES.md)", "MultiEdit(**/ARCH_PRINCIPLES.md)",
+      "Edit(**/Система/память/VERSION.md)", "Write(**/Система/память/VERSION.md)", "MultiEdit(**/Система/память/VERSION.md)",
+      "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/gh/hosts.yml)"
+    ]
+  }
+}

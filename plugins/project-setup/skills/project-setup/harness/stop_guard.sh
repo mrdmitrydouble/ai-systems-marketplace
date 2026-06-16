@@ -93,9 +93,10 @@ if [ "$WORK_SIGNAL" -eq "0" ]; then
 fi
 [ "$WORK_SIGNAL" -eq "0" ] && exit 0
 
-# PROGRESS.md свежий?
-PROGRESS="Система/память/PROGRESS.md"
-if [ -f "$PROGRESS" ]; then
+# PROGRESS свежий? Берём НОВЕЙШИЙ PROGRESS*.md — портируемо: solo=PROGRESS.md,
+# team=PROGRESS_<member>.md (у подопечных общего PROGRESS.md нет).
+PROGRESS=$(ls -t Система/память/PROGRESS*.md 2>/dev/null | head -1)
+if [ -n "$PROGRESS" ] && [ -f "$PROGRESS" ]; then
   PROGRESS_MTIME=$(stat -f %m "$PROGRESS" 2>/dev/null || stat -c %Y "$PROGRESS" 2>/dev/null || echo 0)
   if [ $((NOW - PROGRESS_MTIME)) -lt 600 ]; then
     exit 0
@@ -107,7 +108,7 @@ cat >&2 <<'BLOCK'
 🛑 HARNESS: декларация завершения без wrap-up
 
 Ты сказал что сессия завершена, но PROGRESS.md не обновлялся за последние 10 минут.
-Это паттерн P-001 — «handoff готов без чеклиста».
+Это паттерн P-001 (ОКО) — «handoff готов без чеклиста».
 
 Сделай правильно:
 1. /end           — запустит валидацию чеклиста

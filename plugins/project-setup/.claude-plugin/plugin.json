@@ -1,7 +1,7 @@
 {
   "name": "project-setup",
   "displayName": "AI Project Intelligence — project-setup",
-  "version": "7.0.0",
+  "version": "7.0.1",
   "description": "Инициализация и миграция системы управления проектом (память, правила, harness, CONSCIOUSNESS, автоматизация). Мета-проект и подопечные. Claude Code и Cowork. Ризоматическая спора v7.",
   "author": { "name": "Dmitry Rubin", "email": "mr.dmitry.double@gmail.com" },
   "homepage": "https://github.com/mrdmitrydouble/ai-systems-marketplace",

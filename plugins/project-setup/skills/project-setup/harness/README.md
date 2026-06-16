@@ -17,7 +17,7 @@
 `stop_guard.sh` → `.claude/hooks/`. Ловит декларацию «сессия завершена/handoff готов» без прохождения `/end` → блокирует (`exit 2`) с инструкцией. Фильтры ложных срабатываний: escape hatch «без wrap-up», активность сессии, флаг корректного закрытия.
 
 ### 3. SessionEnd-хук — снапшот при закрытии окна
-`session_end_snapshot.sh` → `.claude/hooks/`. При закрытии окна без `/end`: WIP-коммит + маркер `.claude/.session_incomplete.json`. v2-фиксы: при чистом дереве маркер НЕ пишется (нет цикла marker-only WIP); статус коммита честный (`wip_commit_FAILED_...` если git commit упал); список файлов берётся до коммита; снимает свой маркер из реестра живых сессий.
+`session_end_snapshot.sh` → `.claude/hooks/`. При закрытии окна без `/end` (v3, **marker-only** — research 2026-06-16): НЕ мутирует общий git. `git stash create` кладёт durable-снапшот рабочего дерева в БД объектов git БЕЗ смены HEAD/ветки/индекса и БЕЗ записи в stash-list (якорится `refs/wip-snapshot/<sid>` от GC), затем АТОМАРНО (temp + os.replace, строго последним) пишется маркер `.claude/.session_incomplete.json` с полем `snapshot_ref`. Данные остаются в рабочем дереве как у IDE-autosave (JetBrains Local History / VS Code Hot Exit) → **main не трогается, team-безопасно**. При чистом дереве маркер НЕ пишется; снимает свой маркер из реестра живых сессий. (Прошлая версия делала WIP-коммит в main → накопила 24+ мусорных коммита и цикл-инцидент — отказались.)
 
 ### 4. SessionStart-хук — recovery + гигиена старта
 `session_start_recovery.sh` → `.claude/hooks/`. При старте: (а) если есть `.session_incomplete.json` — через `additionalContext` принудительно инструктирует Claude восстановить wrap-up (шаг обработки прерванной сессии в STARTUP — backup); (б) пишет маркер своей сессии в реестр `.claude/live_sessions/` и чистит протухшие (>2ч); (в) авто-убирает stale `.git/index.lock` (>30 мин без живого git-процесса).
@@ -45,24 +45,36 @@
 
 ## Установка в проект
 
+> ⚠️ **Путь к скиллу (C5):** команды `cp` ниже используют `$SKILL_DIR` — АБСОЛЮТНЫЙ путь к папке установленного скилла. Относительный `harness/` НЕ работает: рабочая папка агента = корень нового проекта, а не папка скилла. Определи путь один раз:
+> ```bash
+> SKILL_DIR=$(dirname "$(find ~ -name SKILL.md -path '*project-setup*' 2>/dev/null | head -1)")
+> ls "$SKILL_DIR/harness/"   # должен показать *.sh и end.md — иначе путь не найден
+> ```
+
 1. Структура:
    ```bash
    mkdir -p .claude/hooks .claude/commands .claude/live_sessions Система/scripts Система/память/inbox_sessions
    touch Система/память/inbox_sessions/.gitkeep
    ```
 
-2. Файлы:
+2. Файлы (из `$SKILL_DIR/harness/`):
    ```bash
-   cp harness/end.md .claude/commands/end.md
-   cp harness/stop_guard.sh harness/session_end_snapshot.sh harness/session_start_recovery.sh harness/memory_write_guard.sh .claude/hooks/
-   cp harness/close_session_check.sh harness/quick_health.sh harness/rebuild_file_index.sh Система/scripts/
+   cp "$SKILL_DIR/harness/end.md" .claude/commands/end.md
+   cp "$SKILL_DIR/harness/"{stop_guard,session_end_snapshot,session_start_recovery,memory_write_guard}.sh .claude/hooks/
+   cp "$SKILL_DIR/harness/"{close_session_check,quick_health,rebuild_file_index}.sh Система/scripts/
    chmod +x .claude/hooks/*.sh Система/scripts/*.sh
+   # ПРОВЕРКА после копирования (C5/C7): 4 хука на месте?
+   ls .claude/hooks/*.sh   # пусто/<4 файлов = установка не прошла → НЕ объявляй harness установленным
    # Слой 1 harness — физическая защита body-файлов (quick_health проверяет эти 444):
    chmod 444 CLAUDE.md Система/память/RULES.md Система/память/ARCH_PRINCIPLES.md
    ```
    (Для правки body-файла: `chmod +w <файл>` → правка → `chmod 444 <файл>`. Облачный синк сбрасывает права — quick_health тогда алертит.)
 
 3. `.claude/settings.json` — слить секции **PreToolUse + Stop + SessionEnd + SessionStart** из `settings.hooks.snippet.json`. Если был старый хук frozen zones (inline-python) — заменить на memory_write_guard.
+   > Оба snippet'а — **чистый валидный JSON** (без `_comment`-ключей, дефект C6 устранён): если `.claude/settings.json` ещё нет — можно скопировать snippet целиком как стартовый файл; если есть — JSON-merge нужных секций (не заменять весь файл: там могут быть другие ключи проекта). Лишние верхнеуровневые `_*`-ключи делают settings.json невалидным/игнорируемым — поэтому пояснения держим здесь, а не в самих .json.
+
+3b. **АВТОНОМНОСТЬ scheduled-задач** — слить блок `permissions` из `settings.permissions.snippet.json` (широкий `allow` + `deny` на frozen/секреты). **deny имеет приоритет над allow** → frozen-зоны и секреты защищены даже при широком allow. Без `allow` фоновая scheduled-задача виснет на промпте «разрешить Edit/Bash?», которого владелец не видит → задача молча не работает. ⚠️ Вставляет **владелец вручную** (редактор или Customize/UI): агент НЕ может писать широкие allow-правила в активный settings.json сам — это самоэскалация прав на исполнение кода, harness её hard-блокирует (как NDA-блок), и это корректно. Проверено боем: deny-only конфиг AiGid → задача `aigid-daily-audit` зависала на «Allow edit SYSTEM_LOG.md?».
+   > **Кросс-проектное чтение (C1):** если проект ПОДОПЕЧНЫЙ и его scheduled-задачи читают папку меты (PROJECT_PATHS/VERSION-маяки), добавь в `permissions` ключ `"additionalDirectories": ["<АБСОЛЮТНЫЙ путь к папке меты>"]`. Без него фоновая задача, читающая вне корня проекта, виснет на промпте. Путь машинно-специфичен → в шаблон-snippet намеренно не зашит, подставляется при установке.
 
 4. `Система/память/STARTUP.md` — шаги обработки `.session_incomplete.json` и слияния `inbox_sessions/` (в шаблоне STARTUP v7 из STRUCTURES.md это шаги 0.2 и 0.3 — уже на месте).
 
@@ -75,7 +87,7 @@
 - `quick_health.sh`: лимиты строк и список обязательных файлов — в начале скрипта, подстрой под проект.
 - `close_session_check.sh`: блок 3 (лимиты) и `WINDOW_MINUTES=240` — подбираются.
 - `stop_guard.sh`: ключевые слова `CLOSURE_RE` — расширить под язык/стиль пользователя.
-- **Team-проекты:** SessionEnd делает WIP-коммит — в отдельную ветку, не в main (см. комментарий в скрипте). Память разделена по участникам — страж параллельности всё равно нужен (общие TRACKER/CONTEXT/shared_board).
+- **Team-проекты:** SessionEnd v3 marker-only НЕ коммитит вообще (durable `git stash create` без мутации main) → team-безопасен из коробки, отдельная ветка не нужна. Память разделена по участникам — страж параллельности всё равно нужен (общие TRACKER/CONTEXT/shared_board).
 - Маркер `.session_incomplete.json` можно добавить в `.gitignore`, если WIP-коммиты маркера шумят в истории.
 
 ## Проверка при старте новой сессии

@@ -73,7 +73,7 @@ description: Инициализация системы управления пр
 Запиши среду в ONBOARDING_STATE.md. Это влияет на:
 - Обработку файлов (Claude Code: прямые пути; Cowork: /mnt/uploads/)
 - Git workflow (Claude Code: коммиты; Cowork: нет)
-- Кросс-проектный доступ (Claude Code: свободный; Cowork: через «+» подключить папки)
+- Кросс-проектный доступ (Claude Code: интерактивно свободный, НО фоновым scheduled-задачам для чтения вне корня проекта нужен `additionalDirectories`/allow — иначе виснут молча; Cowork: через «+» подключить папки)
 - Хуки (Claude Code: .claude/settings.json; Cowork: нет)
 
 ---
@@ -220,10 +220,13 @@ description: Инициализация системы управления пр
 Если среда = Claude Code:
 - Предложи Git workflow: `git init` если нет, `.gitignore` (исключить чувствительное; ПЕРЕД первым push проверить, что в истории нет клиентских/NDA-данных — push с ними блокируется и неисправим задним числом), первый коммит. **Remote:** если STARTUP/`/end` используют `git pull`/`push` — предложи создать приватный GitHub-репо (`gh repo create … --private`) и `git remote add origin`; без remote pull/push в STARTUP/end надо пропускать (см. STARTUP 0.1)
 - **Harness v2** (ОБЯЗАТЕЛЬНО для Claude Code — закрывает паттерн P-001 и параллельные сессии; полная инструкция → `harness/README.md`):
+  - **Сначала определи `$SKILL_DIR`** — АБСОЛЮТНЫЙ путь к папке скилла: `SKILL_DIR=$(dirname "$(find ~ -name SKILL.md -path '*project-setup*' | head -1)")`. Все `cp` ниже — из `$SKILL_DIR/harness/...`. Относительный `harness/` НЕ резолвится: cwd агента = корень нового проекта, а не папка скилла (дефект C5).
   - `mkdir -p .claude/hooks .claude/commands .claude/live_sessions Система/scripts Система/память/inbox_sessions`
-  - Скопировать `harness/end.md` → `.claude/commands/`; `stop_guard.sh`, `session_end_snapshot.sh`, `session_start_recovery.sh`, `memory_write_guard.sh` → `.claude/hooks/`; `close_session_check.sh`, `quick_health.sh`, `rebuild_file_index.sh` → `Система/scripts/`; всем `chmod +x`
+  - Скопировать `$SKILL_DIR/harness/end.md` → `.claude/commands/`; `stop_guard.sh`, `session_end_snapshot.sh`, `session_start_recovery.sh`, `memory_write_guard.sh` → `.claude/hooks/`; `close_session_check.sh`, `quick_health.sh`, `rebuild_file_index.sh` → `Система/scripts/`; всем `chmod +x`
+  - **Проверь установку (C5/C7):** `ls .claude/hooks/*.sh` → должно быть 4 файла. Пусто/меньше → копирование не прошло, НЕ объявляй harness установленным.
   - В `quick_health.sh` и `close_session_check.sh` подстроить лимиты под «Канон лимитов» (STRUCTURES.md)
-  - Слить `harness/settings.hooks.snippet.json` в `.claude/settings.json` (PreToolUse + Stop + SessionEnd + SessionStart)
+  - Слить `$SKILL_DIR/harness/settings.hooks.snippet.json` в `.claude/settings.json` (PreToolUse + Stop + SessionEnd + SessionStart). Snippet — чистый валидный JSON (без `_comment`): нет settings.json → копируй целиком; есть → JSON-merge секций.
+  - **АВТОНОМНОСТЬ scheduled-задач (КРИТИЧНО):** слить `$SKILL_DIR/harness/settings.permissions.snippet.json` в `.claude/settings.json` (блок `permissions`: широкий `allow` + `deny` на frozen-зоны/секреты; deny приоритетнее allow). Без `allow` фоновая задача ВИСНЕТ на промпте «разрешить Edit?» — владелец этого не видит, задача не отрабатывает. ⚠️ **Этот шаг выполняет ВЛАДЕЛЕЦ вручную** (через редактор или Customize/UI): агент НЕ может писать широкие allow-правила сам — harness блокирует самонаделение правами на исполнение кода (как NDA-блок). Альтернатива на задачу: в UI задачи выставить режим «Accept edits» или один раз «Run now» → «Always allow». **[подопечный]** если задачи читают папку меты — владелец добавляет `additionalDirectories: ["<абс. путь к мете>"]` в `permissions` (иначе кросс-проектное чтение виснет, C1).
   - **chmod 444 на body-файлы** (физический слой 1 harness, его проверяет quick_health): `chmod 444 CLAUDE.md Система/память/RULES.md Система/память/ARCH_PRINCIPLES.md` (для правки — сначала `chmod +w`, после — обратно 444). Облачный синк сбрасывает права → quick_health алертит
   - Шаги 0.1-0.4 уже в шаблоне STARTUP.md (STRUCTURES.md) — проверить что на месте
   - memory_write_guard включает frozen zones (Исходники/, Проект-Архив, архив/, backup) — отдельный inline-хук не нужен
@@ -267,7 +270,10 @@ description: Инициализация системы управления пр
 - [ ] **[мета]** STRATEGY.md создан
 - [ ] **[мета]** Еженедельный сканер подопечных настроен + PROJECT_PATHS.md создан
 - [ ] **[Claude Code]** Harness v2 установлен (`/end`, 4 хука вкл. memory_write_guard, quick_health, close_session_check, STARTUP шаги 0.1-0.4)
+- [ ] **[Claude Code]** `ls .claude/hooks/*.sh` = 4 файла (хуки физически на месте — C5)
+- [ ] **[Claude Code]** `.claude/settings.json` валиден (`python3 -c "import json;json.load(open('.claude/settings.json'))"`) И содержит непустой `permissions.allow` + секцию `hooks` (C7 — иначе scheduled-задачи виснут молча)
 - [ ] **[Claude Code]** `quick_health.sh` прогнан — отрабатывает без ошибок
+- [ ] **[Claude Code, если есть scheduled-задачи]** один тестовый «Run now» дошёл до записи в SYSTEM_LOG + автокоммита БЕЗ зависания на промпте (доказательство автономии = автокоммит в git log, не текст промпта — C7/cluster 5)
 - [ ] **[Claude Code]** Git инициализирован, первый коммит
 
 Хотя бы один ❌ → НЕ объявляй завершение.
