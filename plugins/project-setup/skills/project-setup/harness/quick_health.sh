@@ -154,6 +154,35 @@ else
         echo "  inbox_sessions: пусто ✅"
     fi
 fi
+# dead-path детектор (класс LOOV-C3): scheduled-задачи с cwd на мёртвый путь — планировщик молча скипает, автономия мертва
+DEAD_CWD=$(python3 - 2>/dev/null <<'PYEOF'
+import json, glob, os
+hits=glob.glob(os.path.expanduser("~/Library/Application Support/Claude/*/*/*/scheduled-tasks.json"))
+dead=set()
+for f in hits:
+    try: d=json.load(open(f,encoding="utf-8"))
+    except Exception: continue
+    tasks=d.get("scheduledTasks")
+    if isinstance(tasks,dict): tasks=list(tasks.values())
+    for t in (tasks or []):
+        if isinstance(t,dict):
+            if t.get("enabled", True) is False: continue  # отключённые задачи планировщик не запускает
+            cwd=t.get("cwd","")
+            # ключ идентификатора в конфиге — "id" (не "taskId"); fallback на случай смены схемы
+            if cwd and not os.path.isdir(cwd): dead.add(t.get("id") or t.get("taskId") or "?")
+print(len(dead))
+for x in sorted(dead): print(x)
+PYEOF
+)
+DEAD_N=$(echo "$DEAD_CWD" | head -1)
+if ! echo "$DEAD_N" | grep -qE '^[0-9]+$'; then
+    echo "  cwd-биндинги scheduled-задач: не проверено (нет python3/конфига)"
+elif [ "$DEAD_N" -gt 0 ]; then
+    echo "  ⚠️ scheduled-задачи с МЁРТВЫМ cwd: $DEAD_N ($(echo "$DEAD_CWD" | tail -n +2 | tr '\n' ',' | sed 's/,$//')) — планировщик молча скипает, автономия мертва (класс LOOV-C3 → мигрируй cwd)"
+    HARNESS_WARN=$((HARNESS_WARN + 1))
+else
+    echo "  cwd-биндинги scheduled-задач: все живы ✅"
+fi
 
 echo ""
 

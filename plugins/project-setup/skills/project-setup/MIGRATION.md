@@ -37,7 +37,7 @@
 1. Прочитать CLAUDE.md, RULES.md, ARCH_PRINCIPLES.md, VERSION.md
 2. Просканировать файловую структуру
 3. Определить: горячие (каждую сессию), тёплые (по запросу), холодные (архив)
-4. Собрать reference audit: grep всех паттернов, которые будут меняться
+4. Собрать reference audit: grep всех паттернов, которые будут меняться — **ВКЛЮЧАЯ скрытые слои, которые grep проекта НЕ ловит** (боевой класс LOOV-C3 / АвтоГИС, с.47: путь проекта дублируется в ~6 слоях, часть — app-внутренние): промпты scheduled-задач (`~/.claude/scheduled-tasks/*/SKILL.md`) **И их cwd-биндинг** в app `scheduled-tasks.json`; `claude_desktop_config.json` (auto-acks + trusted-folders); `git-worktrees.json`; PROJECT_PATHS.md; память. Обновить ВСЕ слои → иначе тихий отказ (планировщик молча skip «cwd no longer exists», промпт обновлён — задача мертва). После миграции прогнать dead-path-детектор (quick_health).
 5. Результат → checkpoint-файл
 
 ### Инвариант 3 — Frozen zones

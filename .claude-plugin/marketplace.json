@@ -7,7 +7,7 @@
     {
       "name": "project-setup",
       "source": "project-setup",
-      "version": "7.0.1",
+      "version": "7.0.2",
       "description": "Спора v7: инициализация/миграция системы управления проектом (память + harness + ризоматический паспорт). Бамп версии здесь = доставка обновления всем подключённым узлам.",
       "category": "project-management",
       "keywords": ["onboarding", "memory", "harness", "rhizome"],
