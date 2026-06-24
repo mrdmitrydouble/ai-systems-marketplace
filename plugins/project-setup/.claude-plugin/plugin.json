@@ -6,6 +6,6 @@
   "author": { "name": "Dmitry Rubin", "email": "mr.dmitry.double@gmail.com" },
   "homepage": "https://github.com/mrdmitrydouble/ai-systems-marketplace",
   "repository": "https://github.com/mrdmitrydouble/ai-systems-marketplace",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "keywords": ["project-management", "memory", "harness", "rhizome", "ai-systems", "onboarding"]
 }
