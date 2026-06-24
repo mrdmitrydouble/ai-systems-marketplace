@@ -95,7 +95,7 @@ fi
 
 # PROGRESS свежий? Берём НОВЕЙШИЙ PROGRESS*.md — портируемо: solo=PROGRESS.md,
 # team=PROGRESS_<member>.md (у подопечных общего PROGRESS.md нет).
-PROGRESS=$(ls -t Система/память/PROGRESS*.md 2>/dev/null | head -1)
+PROGRESS=$(ls -t System/memory/PROGRESS*.md 2>/dev/null | head -1)
 if [ -n "$PROGRESS" ] && [ -f "$PROGRESS" ]; then
   PROGRESS_MTIME=$(stat -f %m "$PROGRESS" 2>/dev/null || stat -c %Y "$PROGRESS" 2>/dev/null || echo 0)
   if [ $((NOW - PROGRESS_MTIME)) -lt 600 ]; then
@@ -113,7 +113,7 @@ cat >&2 <<'BLOCK'
 Сделай правильно:
 1. /end           — запустит валидацию чеклиста
 2. ИЛИ обнови вручную: PROGRESS.md, SYSTEM_LOG.md, HANDOFF.md
-3. Проверь: bash Система/scripts/close_session_check.sh
+3. Проверь: bash System/scripts/close_session_check.sh
 4. При PASS: git commit + push + touch .claude/.session_closed.flag
 5. Только потом объявляй закрытие
 

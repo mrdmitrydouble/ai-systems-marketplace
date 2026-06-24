@@ -3,8 +3,8 @@
 # v1: Фаза C 10.06 (CRITICAL-1 аудита). v2: 11.06 — дедуп предупреждений, человекочитаемые имена.
 # v3: записи в общие файлы памяти при чужой live-сессии уводятся в inbox_sessions/ (deny с инструкцией
 #     агенту); владельцу кнопок не показываем; scheduled-прогоны исключены по label.
-# 1) Frozen zones: блок записи в Исходники/архив/_backup/Проект-Архив.
-# 2) Коллизия сессий: запись в Система/память/ или CLAUDE.md при чужой live → инбокс сессии.
+# 1) Frozen zones: блок записи в Sources/archive/_backup/Project-Archive.
+# 2) Коллизия сессий: запись в System/memory/ или CLAUDE.md при чужой live → инбокс сессии.
 # Заодно освежает маркер собственной live-сессии (иначе он «протухает» за 2ч в долгой сессии).
 
 set -u
@@ -41,7 +41,7 @@ if sid:
         pass
 
 # --- 1. Frozen zones (exit 2 = блок) ---
-for frozen in ("/Проект/Исходники/", "/Проект/Архив/", "/Система/архив/", "_backup"):
+for frozen in ("/Project/Sources/", "/Project/Archive/", "/System/archive/", "_backup"):
     if frozen in fp:
         print(f"Запись в frozen zone заблокирована: {fp}. Для легитимной архивации — Bash (cp/mv).",
               file=sys.stderr)
@@ -50,7 +50,7 @@ for frozen in ("/Проект/Исходники/", "/Проект/Архив/",
 # --- 2. Коллизия сессий: только файлы памяти ---
 if "/inbox_sessions/" in fp:      # v3: инбокс — личная зона сессии, всегда можно
     sys.exit(0)
-is_memory = ("/Система/память/" in fp) or fp.endswith("/CLAUDE.md")
+is_memory = ("/System/memory/" in fp) or fp.endswith("/CLAUDE.md")
 if not is_memory or not sid:
     sys.exit(0)
 
@@ -115,7 +115,7 @@ for m in glob.glob(os.path.join(reg, "*.marker")):
 
 if rivals:
     who = "; ".join(rivals)
-    inbox = f"Система/память/inbox_sessions/{datetime.date.today().isoformat()}_{sid[:8]}.md"
+    inbox = f"System/memory/inbox_sessions/{datetime.date.today().isoformat()}_{sid[:8]}.md"
     out = {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

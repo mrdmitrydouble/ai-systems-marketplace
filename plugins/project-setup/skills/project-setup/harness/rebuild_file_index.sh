@@ -5,7 +5,7 @@
 
 set -u
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-INDEX="$PROJECT_ROOT/Система/память/FILE_INDEX.md"
+INDEX="$PROJECT_ROOT/System/memory/FILE_INDEX.md"
 [ -f "$INDEX" ] || { echo "FILE_INDEX.md не найден"; exit 1; }
 
 TMP=$(mktemp)
@@ -13,7 +13,7 @@ TMP=$(mktemp)
 echo "<!-- AUTO-INDEX:START (генерируется rebuild_file_index.sh — НЕ редактировать руками) -->"
 echo "## Автоинвентарь (обновлён: $(date '+%Y-%m-%d %H:%M'))"
 echo ""
-for DIR in "Проект/Документы/Финальные" "Проект/Документы/Черновики" "Система/память" "Система/рабочие" "Система/scripts" ".claude/hooks" ".claude/commands"; do
+for DIR in "Project/Documents/Final" "Project/Documents/Drafts" "System/memory" "System/working" "System/scripts" ".claude/hooks" ".claude/commands"; do
     FULL="$PROJECT_ROOT/$DIR"
     [ -d "$FULL" ] || continue
     COUNT=$(find "$FULL" -maxdepth 1 -type f -not -name ".*" | wc -l | tr -d ' ')
@@ -28,8 +28,8 @@ for DIR in "Проект/Документы/Финальные" "Проект/Д
     [ -n "$SUBDIRS" ] && echo "- 📁 подпапки: $SUBDIRS"
     echo ""
 done
-ISO_COUNT=$(find "$PROJECT_ROOT/Проект/Исходники" -type f 2>/dev/null | wc -l | tr -d ' ')
-echo "### Проект/Исходники/ — FROZEN ZONE: $ISO_COUNT файлов (поимённо см. ручную секцию)"
+ISO_COUNT=$(find "$PROJECT_ROOT/Project/Sources" -type f 2>/dev/null | wc -l | tr -d ' ')
+echo "### Project/Sources/ — FROZEN ZONE: $ISO_COUNT файлов (поимённо см. ручную секцию)"
 echo "<!-- AUTO-INDEX:END -->"
 } > "$TMP"
 

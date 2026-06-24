@@ -4,7 +4,7 @@
 # Запускается: агентом при старте сессии, scheduled task, или вручную.
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-MEM="$PROJECT_ROOT/Система/память"
+MEM="$PROJECT_ROOT/System/memory"
 
 echo "=== HEALTH CHECK | $(date '+%Y-%m-%d %H:%M') ==="
 echo ""
@@ -70,7 +70,7 @@ echo ""
 # --- СТРУКТУРА ПАПОК ---
 echo "[СТРУКТУРА]"
 MISSING_DIRS=0
-for D in "$PROJECT_ROOT/Проект" "$PROJECT_ROOT/Проект/Исходники" "$PROJECT_ROOT/Проект/Документы" "$PROJECT_ROOT/Система" "$PROJECT_ROOT/Система/память" "$PROJECT_ROOT/Система/рабочие" "$PROJECT_ROOT/Система/архив"; do
+for D in "$PROJECT_ROOT/Project" "$PROJECT_ROOT/Project/Sources" "$PROJECT_ROOT/Project/Documents" "$PROJECT_ROOT/System" "$PROJECT_ROOT/System/memory" "$PROJECT_ROOT/System/working" "$PROJECT_ROOT/System/archive"; do
     if [ ! -d "$D" ]; then
         echo "  ОТСУТСТВУЕТ: $D"
         MISSING_DIRS=$((MISSING_DIRS + 1))

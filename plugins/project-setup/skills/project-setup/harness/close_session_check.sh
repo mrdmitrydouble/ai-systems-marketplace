@@ -1,6 +1,6 @@
 #!/bin/bash
 # close_session_check.sh — валидация готовности к закрытию сессии
-# Использование: bash Система/scripts/close_session_check.sh
+# Использование: bash System/scripts/close_session_check.sh
 # Exit 0 = PASS (готово), Exit 1 = FAIL (блокеры)
 # Часть harness по Правилу 13 «Harness > Memory LLM»
 
@@ -9,7 +9,7 @@ set -u
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR" || { echo "❌ Не могу зайти в $PROJECT_DIR"; exit 1; }
 
-MEMORY_DIR="Система/память"
+MEMORY_DIR="System/memory"
 WINDOW_MINUTES="${SESSION_WINDOW_MINUTES:-240}"
 NOW=$(date +%s)
 THRESHOLD=$((NOW - WINDOW_MINUTES * 60))

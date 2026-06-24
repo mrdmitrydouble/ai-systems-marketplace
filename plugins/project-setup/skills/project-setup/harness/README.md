@@ -24,15 +24,15 @@
 
 ### 5. PreToolUse-страж — frozen zones + параллельность
 `memory_write_guard.sh` → `.claude/hooks/` (matcher `Edit|Write`). Две функции:
-- **Frozen zones:** физический блок записи в `Проект/Исходники/`, `Система/архив/`, `*_backup*` (для легитимной архивации — Bash cp/mv).
-- **Страж параллельности (v3):** при записи в общие файлы памяти при живой ЧУЖОЙ live-сессии — deny с инструкцией агенту записать дельту в `Система/память/inbox_sessions/` (заголовок «## для [файл]»). Слияние — `/end` шаг 0 или шаг слияния инбоксов в STARTUP. Владельцу — ноль кнопок. Scheduled-прогоны исключены по label (бесконфликтны по дизайну).
+- **Frozen zones:** физический блок записи в `Project/Sources/`, `System/archive/`, `*_backup*` (для легитимной архивации — Bash cp/mv).
+- **Страж параллельности (v3):** при записи в общие файлы памяти при живой ЧУЖОЙ live-сессии — deny с инструкцией агенту записать дельту в `System/memory/inbox_sessions/` (заголовок «## для [файл]»). Слияние — `/end` шаг 0 или шаг слияния инбоксов в STARTUP. Владельцу — ноль кнопок. Scheduled-прогоны исключены по label (бесконфликтны по дизайну).
 
 ### 6. quick_health.sh — детерминированные метрики
-`quick_health.sh` → `Система/scripts/`. Запускается в STARTUP: лимиты строк файлов памяти, наличие обязательных файлов/папок, git-статус, свежесть HANDOFF, секция `[HARNESS]` (stale lock, chmod 444, неслитые инбоксы) → PID-метрики + статус ЗЕЛЁНЫЙ/ЖЁЛТЫЙ/КРАСНЫЙ. Факты вместо самоописания агента.
+`quick_health.sh` → `System/scripts/`. Запускается в STARTUP: лимиты строк файлов памяти, наличие обязательных файлов/папок, git-статус, свежесть HANDOFF, секция `[HARNESS]` (stale lock, chmod 444, неслитые инбоксы) → PID-метрики + статус ЗЕЛЁНЫЙ/ЖЁЛТЫЙ/КРАСНЫЙ. Факты вместо самоописания агента.
 
-**Инфраструктура слоёв:** реестр живых сессий `.claude/live_sessions/*.marker` (пишет SessionStart, снимает SessionEnd) + личные инбоксы `Система/память/inbox_sessions/`.
+**Инфраструктура слоёв:** реестр живых сессий `.claude/live_sessions/*.marker` (пишет SessionStart, снимает SessionEnd) + личные инбоксы `System/memory/inbox_sessions/`.
 
-**Дополнительно:** `rebuild_file_index.sh` → `Система/scripts/` — автопересборка FILE_INDEX.md (ручное ведение реестров протухает молча; у меты индекс был заморожен 72 дня).
+**Дополнительно:** `rebuild_file_index.sh` → `System/scripts/` — автопересборка FILE_INDEX.md (ручное ведение реестров протухает молча; у меты индекс был заморожен 72 дня).
 
 ## Принципы дизайна harness (выстраданы полевыми итерациями v1→v3)
 
@@ -53,20 +53,20 @@
 
 1. Структура:
    ```bash
-   mkdir -p .claude/hooks .claude/commands .claude/live_sessions Система/scripts Система/память/inbox_sessions
-   touch Система/память/inbox_sessions/.gitkeep
+   mkdir -p .claude/hooks .claude/commands .claude/live_sessions System/scripts System/memory/inbox_sessions
+   touch System/memory/inbox_sessions/.gitkeep
    ```
 
 2. Файлы (из `$SKILL_DIR/harness/`):
    ```bash
    cp "$SKILL_DIR/harness/end.md" .claude/commands/end.md
    cp "$SKILL_DIR/harness/"{stop_guard,session_end_snapshot,session_start_recovery,memory_write_guard}.sh .claude/hooks/
-   cp "$SKILL_DIR/harness/"{close_session_check,quick_health,rebuild_file_index}.sh Система/scripts/
-   chmod +x .claude/hooks/*.sh Система/scripts/*.sh
+   cp "$SKILL_DIR/harness/"{close_session_check,quick_health,rebuild_file_index}.sh System/scripts/
+   chmod +x .claude/hooks/*.sh System/scripts/*.sh
    # ПРОВЕРКА после копирования (C5/C7): 4 хука на месте?
    ls .claude/hooks/*.sh   # пусто/<4 файлов = установка не прошла → НЕ объявляй harness установленным
    # Слой 1 harness — физическая защита body-файлов (quick_health проверяет эти 444):
-   chmod 444 CLAUDE.md Система/память/RULES.md Система/память/ARCH_PRINCIPLES.md
+   chmod 444 CLAUDE.md System/memory/RULES.md System/memory/ARCH_PRINCIPLES.md
    ```
    (Для правки body-файла: `chmod +w <файл>` → правка → `chmod 444 <файл>`. Облачный синк сбрасывает права — quick_health тогда алертит.)
 
@@ -76,11 +76,11 @@
 3b. **АВТОНОМНОСТЬ scheduled-задач** — слить блок `permissions` из `settings.permissions.snippet.json` (широкий `allow` + `deny` на frozen/секреты). **deny имеет приоритет над allow** → frozen-зоны и секреты защищены даже при широком allow. Без `allow` фоновая scheduled-задача виснет на промпте «разрешить Edit/Bash?», которого владелец не видит → задача молча не работает. ⚠️ Вставляет **владелец вручную** (редактор или Customize/UI): агент НЕ может писать широкие allow-правила в активный settings.json сам — это самоэскалация прав на исполнение кода, harness её hard-блокирует (как NDA-блок), и это корректно. Проверено боем: deny-only конфиг AiGid → задача `aigid-daily-audit` зависала на «Allow edit SYSTEM_LOG.md?».
    > **Кросс-проектное чтение (C1):** если проект ПОДОПЕЧНЫЙ и его scheduled-задачи читают папку меты (PROJECT_PATHS/VERSION-маяки), добавь в `permissions` ключ `"additionalDirectories": ["<АБСОЛЮТНЫЙ путь к папке меты>"]`. Без него фоновая задача, читающая вне корня проекта, виснет на промпте. Путь машинно-специфичен → в шаблон-snippet намеренно не зашит, подставляется при установке.
 
-4. `Система/память/STARTUP.md` — шаги обработки `.session_incomplete.json` и слияния `inbox_sessions/` (в шаблоне STARTUP v7 из STRUCTURES.md это шаги 0.2 и 0.3 — уже на месте).
+4. `System/memory/STARTUP.md` — шаги обработки `.session_incomplete.json` и слияния `inbox_sessions/` (в шаблоне STARTUP v7 из STRUCTURES.md это шаги 0.2 и 0.3 — уже на месте).
 
-5. `Система/память/RULES.md` — правило закрытия сессии: триггер-слова → `/end`.
+5. `System/memory/RULES.md` — правило закрытия сессии: триггер-слова → `/end`.
 
-6. Проверка: `bash Система/scripts/quick_health.sh` (метрики выводятся) и `bash Система/scripts/close_session_check.sh` (FAIL в начале сессии — ожидаемо).
+6. Проверка: `bash System/scripts/quick_health.sh` (метрики выводятся) и `bash System/scripts/close_session_check.sh` (FAIL в начале сессии — ожидаемо).
 
 ## Адаптация под проект
 
