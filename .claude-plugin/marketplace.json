@@ -1,13 +1,13 @@
 {
   "name": "ai-systems-marketplace",
   "owner": { "name": "Dmitry Rubin", "email": "mr.dmitry.double@gmail.com" },
-  "description": "Приватный marketplace ризомы AI Project Intelligence. Споры (скиллы-плагины) для разворачивания систем управления проектами у партнёров и подопечных.",
+  "description": "Публичный marketplace ризомы AI Project Intelligence. Споры (скиллы-плагины) для разворачивания систем управления проектами.",
   "metadata": { "pluginRoot": "./plugins" },
   "plugins": [
     {
       "name": "project-setup",
       "source": "project-setup",
-      "version": "8.0.0",
+      "version": "8.0.1",
       "description": "Спора v8: инициализация/миграция системы управления проектом (память + harness + ризоматический паспорт). Бамп версии здесь = доставка обновления всем подключённым узлам. v8.0.0 (breaking): латинские (ASCII) имена папок и файлов структуры — Project/System/memory/working/Documents/Sources/Drafts/Final вместо кириллицы (среда отвергала не-ASCII имена). Включает UX-стандарт пуш-уведомлений из v7.0.4.",
       "category": "project-management",
       "keywords": ["onboarding", "memory", "harness", "rhizome"],
