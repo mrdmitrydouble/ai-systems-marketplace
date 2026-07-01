@@ -173,6 +173,15 @@ Frozen-файлы НЕ ИЗМЕНИЛИСЬ? Сравнить размеры с 
 
 ## МИГРАЦИЯ С ПРЕДЫДУЩИХ ВЕРСИЙ
 
+### harness v3 → v4 (внутри skill v8 — без смены версии скилла)
+
+Живость сессий по ПРОЦЕССУ вместо таймера 2ч. Чинит ложные «рядом открыта сессия» на долгих/мобильных сессиях + гарантирует слияние инбоксов. Структура не меняется — только harness-файлы:
+1. **Новый файл:** `harness/session_liveness.py` → `System/scripts/session_liveness.py` (chmod +x). Ядро живости; на него ссылаются хуки и `/end`.
+2. **Заменить 5 файлов** (логика, пути уже латинизированы в v8): `memory_write_guard.sh`, `session_start_recovery.sh`, `session_end_snapshot.sh` → `.claude/hooks/`; `close_session_check.sh` → `System/scripts/`; `end.md` → `.claude/commands/`.
+3. **Оракул:** `python3 System/scripts/session_liveness.py report "$PWD"` → видит свою сессию; `bash System/scripts/close_session_check.sh` → Блок 5 присутствует. Прогнать sweep на мёртвом/живом маркере (см. тест-сценарии в SYSTEM_LOG меты).
+4. **Гигиена:** старые осиротевшие `refs/wip-snapshot/*` и протухшие `.claude/live_sessions/*.marker` — подметутся сами при первом старте/`/end`; несмёрженные `inbox_sessions/*.md` — слить (гейт на старте подскажет).
+> ⚠️ Файлы памяти (PROGRESS_<member> и т.п.) и team-логику close_session_check НЕ трогать — она сохранена. Делать на чистом дереве.
+
 ### v7.x → v8
 
 Изменение одно, но структурное: **имена папок/файлов → латиница (ASCII)**. L-задача (переименование + правка всех путей). Протокол:

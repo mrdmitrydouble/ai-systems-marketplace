@@ -102,7 +102,7 @@ echo "[HANDOFF]"
 if [ -f "$MEM/HANDOFF.md" ]; then
     HANDOFF_DATE=$(grep -m1 'Обновлено:' "$MEM/HANDOFF.md" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
     if [ -n "$HANDOFF_DATE" ]; then
-        DAYS_OLD=$(( ($(date +%s) - $(date -j -f "%Y-%m-%d" "$HANDOFF_DATE" +%s 2>/dev/null || echo $(date +%s))) / 86400 ))
+        DAYS_OLD=$(( ($(date +%s) - $(date -j -f "%Y-%m-%d" "$HANDOFF_DATE" +%s 2>/dev/null || date -d "$HANDOFF_DATE" +%s 2>/dev/null || echo $(date +%s))) / 86400 ))
         echo "  Последнее обновление: $HANDOFF_DATE ($DAYS_OLD дней назад)"
     else
         echo "  Дата обновления не найдена"
@@ -157,7 +157,10 @@ fi
 # dead-path детектор (класс LOOV-C3): scheduled-задачи с cwd на мёртвый путь — планировщик молча скипает, автономия мертва
 DEAD_CWD=$(python3 - 2>/dev/null <<'PYEOF'
 import json, glob, os
-hits=glob.glob(os.path.expanduser("~/Library/Application Support/Claude/*/*/*/scheduled-tasks.json"))
+hits=[]
+for _p in ("~/Library/Application Support/Claude/*/*/*/scheduled-tasks.json",  # macOS desktop
+           "~/.config/Claude/*/*/*/scheduled-tasks.json"):                      # Linux desktop
+    hits += glob.glob(os.path.expanduser(_p))
 dead=set()
 for f in hits:
     try: d=json.load(open(f,encoding="utf-8"))
@@ -170,7 +173,7 @@ for f in hits:
             cwd=t.get("cwd","")
             # ключ идентификатора в конфиге — "id" (не "taskId"); fallback на случай смены схемы
             if cwd and not os.path.isdir(cwd): dead.add(t.get("id") or t.get("taskId") or "?")
-print(len(dead))
+print(len(dead) if hits else "noconfig")  # нет конфига (headless/cron?) → «не проверено», не «все живы»
 for x in sorted(dead): print(x)
 PYEOF
 )

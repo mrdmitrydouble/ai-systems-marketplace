@@ -116,6 +116,23 @@ if [ -f "$HANDOFF_FILE" ]; then
 fi
 
 echo ""
+echo "Блок 5 — Инбоксы параллельных сессий (гарантия слияния):"
+INBOX_DIR="$MEMORY_DIR/inbox_sessions"
+INBOX_CNT=$(find "$INBOX_DIR" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$INBOX_CNT" -gt "0" ]; then
+  RIVALS=$(python3 System/scripts/session_liveness.py rivals "$PROJECT_DIR" 2>/dev/null | grep -c . | tr -d ' ')
+  if [ "${RIVALS:-0}" -gt "0" ]; then
+    echo "⚠️  $INBOX_CNT инбокс-файл(ов), но ещё $RIVALS живых сессий — слияние отложено (сделает последняя)"
+    WARNINGS=$((WARNINGS+1))
+  else
+    echo "❌ $INBOX_CNT несмёрженных инбокс-файл(ов), а ты ПОСЛЕДНЯЯ живая сессия — слей их перед закрытием (Шаг 0 /end)"
+    FAILS=$((FAILS+1))
+  fi
+else
+  echo "✅ Инбоксы пусты"
+fi
+
+echo ""
 echo "=== ИТОГ ==="
 if [ "$FAILS" -gt "0" ]; then
   echo "❌ FAIL: $FAILS блокеров, $WARNINGS предупреждений"

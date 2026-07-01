@@ -17,11 +17,14 @@ try: print(json.load(sys.stdin).get('session_id',''))
 except: print('')" 2>/dev/null)
 mkdir -p .claude/live_sessions
 if [ -n "$SID" ]; then
-  date -u +"%Y-%m-%dT%H:%M:%SZ" > ".claude/live_sessions/${SID}.marker"
+  # v4 (29.06): живость по ПРОЦЕССУ, не по таймеру. строка1=ISO-время, строка2=root-PID claude.
+  # PID нужен, чтобы любая сессия могла точно отличить живой процесс от крэш-маркера.
+  { date -u +"%Y-%m-%dT%H:%M:%SZ"; python3 System/scripts/session_liveness.py self 2>/dev/null; } \
+    > ".claude/live_sessions/${SID}.marker"
 fi
-# чистка протухших маркеров (>2 ч — сессия умерла без SessionEnd). Свой маркер только что записан
-# (возраст 0) и переживёт чистку; долгая live-сессия освежает его через memory_write_guard.
-find .claude/live_sessions -name "*.marker" -mmin +120 -delete 2>/dev/null
+# Подмести маркеры МЁРТВЫХ процессов — по факту процесса (kill-уровень точность, не таймер 2ч).
+# Свой маркер только что записан с живым PID → переживёт. Pidless-маркеры старого формата: фолбэк >8ч.
+python3 System/scripts/session_liveness.py sweep "$PROJECT_DIR" >/dev/null 2>&1
 
 # --- Автоочистка stale index.lock ---
 LOCK_MSG=""
@@ -39,15 +42,18 @@ if [ -f "$LOCK" ]; then
 fi
 
 MARKER=".claude/.session_incomplete.json"
+# Несмёрженные инбоксы параллельных сессий (Пакет C: гарантия слияния, не «надежда на промпт»)
+INBOX_CNT=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+INBOX_LIST=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" -exec basename {} \; 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 # Нечего сообщать — выходим молча
-[ ! -f "$MARKER" ] && [ -z "$LOCK_MSG" ] && exit 0
+[ ! -f "$MARKER" ] && [ -z "$LOCK_MSG" ] && [ "${INBOX_CNT:-0}" -eq "0" ] && exit 0
 
 # Дополнительный контекст — последние коммиты (только для чтения в Python через env)
 RECENT_COMMITS=$(git log --oneline -5 2>/dev/null | tr '\n' '|')
 
 # Закавыченный heredoc: никакой подстановки шелла в Python-код (аудит 10.06 п.9).
 # Маркер Python читает сам из файла, остальное — через env.
-export RC_LOCK_MSG="$LOCK_MSG" RC_COMMITS="$RECENT_COMMITS"
+export RC_LOCK_MSG="$LOCK_MSG" RC_COMMITS="$RECENT_COMMITS" RC_INBOX_CNT="$INBOX_CNT" RC_INBOX_LIST="$INBOX_LIST"
 python3 <<'PYEOF'
 import json, os
 
@@ -75,6 +81,17 @@ if os.path.exists(mpath):
         "5. Если «пропустить» → rm .claude/.session_incomplete.json, продолжай новую сессию\n\n"
         f"Последние коммиты: {os.environ.get('RC_COMMITS', '?')}\n\n"
         "Не игнорируй это сообщение. Это harness для паттерна P-001."
+    )
+
+inbox_cnt = os.environ.get("RC_INBOX_CNT", "0")
+if inbox_cnt and inbox_cnt != "0":
+    inbox_list = os.environ.get("RC_INBOX_LIST", "")
+    parts.append(
+        f"📥 СЛЕЙ ИНБОКСЫ ПЕРЕД РАБОТОЙ: в System/memory/inbox_sessions/ есть {inbox_cnt} несмёрженных "
+        f"дельт параллельных сессий ({inbox_list}). ОБЯЗАТЕЛЬНО выполни шаг 0.6 STARTUP (слияние инбоксов) "
+        "ДО любой другой работы: прочитай каждый файл, влей содержимое по заголовкам «## для X» в целевой "
+        "файл памяти, удали файл-инбокс. Это harness-гейт (Пакет C) — данные параллельных сессий не должны "
+        "зависнуть несмёрженными (был недельный завал в подопечных)."
     )
 
 if parts:
