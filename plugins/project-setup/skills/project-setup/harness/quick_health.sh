@@ -142,6 +142,29 @@ if [ "$CHMOD_BAD" -gt 0 ]; then
 else
     echo "  chmod 444 body-файлов: ок ✅"
 fi
+# --- УСТАВКА: геном в корне и не дрейфует ---
+# Уставка (CONSCIOUSNESS.md) — то, относительно чего система вообще меряет здоровье.
+# Урок узла-мутации: положенный в Черновики геном не грузится в контекст ни разу —
+# уставка формально есть, фактически мертва. Второй риск — тихая правка генома:
+# файл поменялся, паспорт помнит старый хеш, и никто этого не замечает.
+if [ ! -f "$PROJECT_ROOT/CONSCIOUSNESS.md" ]; then
+    echo "  ⚠️ CONSCIOUSNESS.md отсутствует в корне — уставка не грузится (геном в Черновиках = мёртв)"
+    HARNESS_WARN=$((HARNESS_WARN + 1))
+else
+    GENOME_NOW=$(shasum -a 256 "$PROJECT_ROOT/CONSCIOUSNESS.md" 2>/dev/null | cut -d' ' -f1)
+    GENOME_REC=$(grep -m1 '^genome_hash:' "$MEM/VERSION.md" 2>/dev/null | awk '{print $2}')
+    if [ -z "$GENOME_NOW" ]; then
+        echo "  геном: не проверен (нет shasum)"
+    elif [ -z "$GENOME_REC" ]; then
+        echo "  ⚠️ genome_hash не найден в VERSION.md — паспорт неполон, дрифт генома не отслеживается"
+        HARNESS_WARN=$((HARNESS_WARN + 1))
+    elif [ "$GENOME_NOW" != "$GENOME_REC" ]; then
+        echo "  ⚠️ ГЕНОМ ДРИФТУЕТ: хеш CONSCIOUSNESS.md != genome_hash паспорта — правка уставки не зафиксирована (или файл повреждён)"
+        HARNESS_WARN=$((HARNESS_WARN + 1))
+    else
+        echo "  CONSCIOUSNESS.md: в корне, геном = паспорт ✅"
+    fi
+fi
 # неслитые инбоксы параллельных сессий (страж v3; слияние = шаг слияния инбоксов в STARTUP)
 if [ ! -d "$MEM/inbox_sessions" ]; then
     echo "  inbox_sessions: папка отсутствует (harness параллельности не установлен)"
@@ -185,6 +208,27 @@ elif [ "$DEAD_N" -gt 0 ]; then
     HARNESS_WARN=$((HARNESS_WARN + 1))
 else
     echo "  cwd-биндинги scheduled-задач: все живы ✅"
+fi
+# --- ДЕТЕКТОР «ПРОГОН БЕЗ СЛЕДА» ---
+# Задача может отчитаться об успешном запуске и не доставить результат. Отметка
+# планировщика об этом молчит, поэтому смотрим на независимый факт — коммит-доставку.
+PULSE_SH="$PROJECT_ROOT/System/scripts/check_pulse_freshness.sh"
+if [ ! -f "$PULSE_SH" ]; then
+    echo "  пульс периодических задач: детектор не установлен"
+else
+    PULSE_OUT=$(bash "$PULSE_SH" 2>/dev/null)
+    PULSE_RC=$?
+    PULSE_STALE=$(printf "%s" "$PULSE_OUT" | grep -c '🔴')
+    if [ "$PULSE_RC" = "2" ]; then
+        # Реестра нет или он пуст. Это «не проверено», а НЕ «всё хорошо».
+        echo "  пульс периодических задач: не проверено (реестр не настроен — System/memory/pulse_registry.txt)"
+    elif [ "$PULSE_STALE" -gt 0 ]; then
+        echo "  ⚠️ деливераблы протухли: $PULSE_STALE (результат не доходит до владельца — см. System/memory/scheduled_runs.md):"
+        printf "%s\n" "$PULSE_OUT" | grep '🔴' | sed 's/^ */    /'
+        HARNESS_WARN=$((HARNESS_WARN + 1))
+    else
+        echo "  пульс периодических задач: все свежие ✅"
+    fi
 fi
 
 echo ""

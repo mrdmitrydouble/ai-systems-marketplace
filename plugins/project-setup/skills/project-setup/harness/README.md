@@ -1,13 +1,30 @@
-# Harness — обвязка надёжности (v4)
+# Harness — обвязка надёжности (v5)
 
-> v4 (скилл project-setup v8+). Эволюция: v1.0 — сессионный цикл закрытия (4 слоя);
+> v5 (скилл project-setup v8.1+). Эволюция: v1.0 — сессионный цикл закрытия (4 слоя);
 > v2 — + страж параллельности, health-скрипт, автопересборка индекса;
 > v3 — + frozen zones и слияние инбоксов в memory_write_guard, фиксы хуков;
 > v4 — **живость сессий по ПРОЦЕССУ, не по таймеру** (`session_liveness.py`): соперник = живой
 > claude-процесс этой папки (по cwd/inode), а не маркер моложе 2ч. Чинит ложные «сессия открыта»
 > на долгих/мобильных сессиях; `/end` самочинится (sweep мёртвых) и называет соперника поимённо;
 > гарантия слияния инбоксов (Блок 5 + гейт на старте). Маркер хранит root-PID (строка 2).
+> v5 — **три детектора молчаливой смерти** (дрифт уставки, «прогон без следа», нарушение frozen
+> по факту git) + **smoke-тест хуков** + **подагенты**. Разбор — в разделе «Слои 7–10» ниже.
 > Применяется к Claude Code проектам. Cowork — не поддерживается (нет хуков).
+
+## Что нового в v5 и зачем
+
+Все три добавленных детектора ловят один класс: **система выглядит здоровой и при этом
+не работает**. Такое не ловится ни тестом на exit-код, ни чтением логов — только
+независимым замером факта.
+
+| Слой | Файл | Что ловит |
+|---|---|---|
+| 7 | `quick_health.sh` (блок «уставка») | Геном (`CONSCIOUSNESS.md`) не в корне → не грузится в контекст, уставка мертва. Либо хеш файла разошёлся с `genome_hash` в паспорте → уставку правили молча. |
+| 8 | `check_pulse_freshness.sh` | Периодическая задача «отработала», но результат до владельца не дошёл. Смотрит не на самоотчёт задачи, а на реальный коммит-доставку. **Не настроен реестр → говорит «не проверено», а не «всё свежо».** |
+| 9 | `frozen_check.sh` | Правку frozen-зоны в обход стража (через Bash или руками) — по факту в git, а не по намерению. |
+| 10 | `agents/*.md` | Не детектор: четыре подагента (аудитор, поисковик, документалист, мигратор) с рабочим заголовком `name`/`description` — без этих полей Claude Code подагента просто не видит. |
+| — | `smoke_hooks.sh` | Проверяет, что хуки РЕАЛЬНО срабатывают, а не просто лежат на диске. Гоняет настоящие хуки на подготовленном вводе в изолированной песочнице. 17 проверок. |
+| — | `stamp_run.sh` | Отметка о ЗАВЕРШЁННОМ прогоне (последняя строка задачи). Пара к слою 8: «стартовала» и «дошла до конца» — разные факты. |
 
 ## Зачем
 
@@ -58,15 +75,22 @@
 
 1. Структура:
    ```bash
-   mkdir -p .claude/hooks .claude/commands .claude/live_sessions System/scripts System/memory/inbox_sessions
+   mkdir -p .claude/hooks .claude/commands .claude/live_sessions .claude/agents System/scripts System/memory/inbox_sessions
    touch System/memory/inbox_sessions/.gitkeep
    ```
 
-2. Файлы (из `$SKILL_DIR/harness/`):
+2. Файлы (из `$SKILL_DIR/`):
    ```bash
    cp "$SKILL_DIR/harness/end.md" .claude/commands/end.md
    cp "$SKILL_DIR/harness/"{stop_guard,session_end_snapshot,session_start_recovery,memory_write_guard}.sh .claude/hooks/
    cp "$SKILL_DIR/harness/"{close_session_check,quick_health,rebuild_file_index}.sh System/scripts/
+   # v5: детекторы молчаливой смерти + smoke-тест + отметка прогонов
+   cp "$SKILL_DIR/harness/"{check_pulse_freshness,frozen_check,smoke_hooks,stamp_run}.sh System/scripts/
+   # ⚠️ ОБЯЗАТЕЛЬНО: без этого модуля страж параллельных сессий МОЛЧА выключен (см. врезку ниже)
+   cp "$SKILL_DIR/harness/session_liveness.py" System/scripts/
+   cp "$SKILL_DIR/harness/pulse_registry.example.txt" System/memory/
+   # Подагенты (без полей name/description в заголовке Claude Code их не видит)
+   cp "$SKILL_DIR/agents/"*.md .claude/agents/
    chmod +x .claude/hooks/*.sh System/scripts/*.sh
    # ПРОВЕРКА после копирования (C5/C7): 4 хука на месте?
    ls .claude/hooks/*.sh   # пусто/<4 файлов = установка не прошла → НЕ объявляй harness установленным
@@ -74,6 +98,16 @@
    chmod 444 CLAUDE.md System/memory/RULES.md System/memory/ARCH_PRINCIPLES.md
    ```
    (Для правки body-файла: `chmod +w <файл>` → правка → `chmod 444 <файл>`. Облачный синк сбрасывает права — quick_health тогда алертит.)
+
+   > ⚠️ **`session_liveness.py` — не опциональный файл.** `memory_write_guard.sh` импортирует
+   > его и при отсутствии **пропускает запись молча** (fail-open: лучше пустить, чем сломать
+   > работу). Практическое следствие: harness выглядит установленным, хуки на месте,
+   > `ls .claude/hooks/` показывает четыре файла — а защиты от параллельных сессий нет вовсе.
+   > До v8.1 этот файл в списке копирования отсутствовал; если разворачивал систему по старой
+   > инструкции — скопируй его сейчас и прогони `smoke_hooks.sh` (шаг 6).
+
+   > **Отметки прогонов** `stamp_run.sh` пишет в `System/state/` — это локальный факт
+   > конкретной машины, а не общая память. Добавь `System/state/` в `.gitignore`.
 
 3. `.claude/settings.json` — слить секции **PreToolUse + Stop + SessionEnd + SessionStart** из `settings.hooks.snippet.json`. Если был старый хук frozen zones (inline-python) — заменить на memory_write_guard.
    > Оба snippet'а — **чистый валидный JSON** (без `_comment`-ключей, дефект C6 устранён): если `.claude/settings.json` ещё нет — можно скопировать snippet целиком как стартовый файл; если есть — JSON-merge нужных секций (не заменять весь файл: там могут быть другие ключи проекта). Лишние верхнеуровневые `_*`-ключи делают settings.json невалидным/игнорируемым — поэтому пояснения держим здесь, а не в самих .json.
@@ -85,7 +119,20 @@
 
 5. `System/memory/RULES.md` — правило закрытия сессии: триггер-слова → `/end`.
 
-6. Проверка: `bash System/scripts/quick_health.sh` (метрики выводятся) и `bash System/scripts/close_session_check.sh` (FAIL в начале сессии — ожидаемо).
+6. **Приёмка установки — обязательный шаг.** Список файлов на диске не доказывает, что harness
+   работает: страж без `session_liveness.py` лежит на месте и молча ничего не делает. Поэтому
+   приёмка — прогон, а не `ls`:
+   ```bash
+   bash System/scripts/smoke_hooks.sh      # ДОЛЖНО быть «SMOKE: ЗЕЛЁНЫЙ», 17 из 17
+   bash System/scripts/quick_health.sh     # метрики выводятся, секция [HARNESS] заполнена
+   bash System/scripts/close_session_check.sh   # FAIL в начале сессии — так и задумано
+   ```
+   Красный `smoke_hooks` — harness НЕ установлен, сколько бы файлов ни лежало в папках.
+   Не объявляй установку завершённой до зелёного прогона.
+
+7. **Реестр пульса** (если у проекта есть периодические задачи): скопируй
+   `System/memory/pulse_registry.example.txt` → `System/memory/pulse_registry.txt` и заполни.
+   Пока реестр не заполнен, детектор честно говорит «не проверено» и НЕ рапортует «всё свежо».
 
 ## Адаптация под проект
 

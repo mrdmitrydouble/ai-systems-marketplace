@@ -1,11 +1,21 @@
 {
   "name": "project-setup",
   "displayName": "AI Project Intelligence — project-setup",
-  "version": "8.0.2",
-  "description": "Инициализация и миграция системы управления проектом (память, правила, harness, CONSCIOUSNESS, автоматизация). Мета-проект и подопечные. Claude Code и Cowork. Ризоматическая спора v8 — латинские (ASCII) имена папок и файлов структуры.",
-  "author": { "name": "Dmitry Rubin", "email": "mr.dmitry.double@gmail.com" },
+  "version": "8.1.0",
+  "description": "Инициализация и миграция системы управления проектом (память, правила, harness v5, подагенты, CONSCIOUSNESS, автоматизация). Мета-проект и подопечные. Claude Code и Cowork. Ризоматическая спора v8 — латинские (ASCII) имена папок и файлов структуры.",
+  "author": {
+    "name": "Dmitry Rubin",
+    "email": "mr.dmitry.double@gmail.com"
+  },
   "homepage": "https://github.com/mrdmitrydouble/ai-systems-marketplace",
   "repository": "https://github.com/mrdmitrydouble/ai-systems-marketplace",
   "license": "MIT",
-  "keywords": ["project-management", "memory", "harness", "rhizome", "ai-systems", "onboarding"]
+  "keywords": [
+    "project-management",
+    "memory",
+    "harness",
+    "rhizome",
+    "ai-systems",
+    "onboarding"
+  ]
 }

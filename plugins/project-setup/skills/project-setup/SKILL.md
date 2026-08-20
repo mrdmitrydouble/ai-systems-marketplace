@@ -224,11 +224,13 @@ description: Инициализация системы управления пр
 
 Если среда = Claude Code:
 - Предложи Git workflow: `git init` если нет, `.gitignore` (исключить чувствительное; ПЕРЕД первым push проверить, что в истории нет клиентских/NDA-данных — push с ними блокируется и неисправим задним числом), первый коммит. **Remote:** если STARTUP/`/end` используют `git pull`/`push` — предложи создать приватный GitHub-репо (`gh repo create … --private`) и `git remote add origin`; без remote pull/push в STARTUP/end надо пропускать (см. STARTUP 0.1)
-- **Harness v2** (ОБЯЗАТЕЛЬНО для Claude Code — закрывает паттерн P-001 и параллельные сессии; полная инструкция → `harness/README.md`):
-  - **Сначала определи `$SKILL_DIR`** — АБСОЛЮТНЫЙ путь к папке скилла: `SKILL_DIR=$(dirname "$(find ~ -name SKILL.md -path '*project-setup*' | head -1)")`. Все `cp` ниже — из `$SKILL_DIR/harness/...`. Относительный `harness/` НЕ резолвится: cwd агента = корень нового проекта, а не папка скилла (дефект C5).
-  - `mkdir -p .claude/hooks .claude/commands .claude/live_sessions System/scripts System/memory/inbox_sessions`
-  - Скопировать `$SKILL_DIR/harness/end.md` → `.claude/commands/`; `stop_guard.sh`, `session_end_snapshot.sh`, `session_start_recovery.sh`, `memory_write_guard.sh` → `.claude/hooks/`; `close_session_check.sh`, `quick_health.sh`, `rebuild_file_index.sh` → `System/scripts/`; всем `chmod +x`
-  - **Проверь установку (C5/C7):** `ls .claude/hooks/*.sh` → должно быть 4 файла. Пусто/меньше → копирование не прошло, НЕ объявляй harness установленным.
+- **Harness v5** (ОБЯЗАТЕЛЬНО для Claude Code — закрывает паттерн P-001, параллельные сессии и три вида молчаливой смерти; полная инструкция → `harness/README.md`):
+  - **Сначала определи `$SKILL_DIR`** — АБСОЛЮТНЫЙ путь к папке скилла: `SKILL_DIR=$(dirname "$(find ~ -name SKILL.md -path '*project-setup*' | head -1)")`. Все `cp` ниже — из `$SKILL_DIR/...`. Относительный `harness/` НЕ резолвится: cwd агента = корень нового проекта, а не папка скилла (дефект C5).
+  - `mkdir -p .claude/hooks .claude/commands .claude/live_sessions .claude/agents System/scripts System/memory/inbox_sessions`
+  - Скопировать `$SKILL_DIR/harness/end.md` → `.claude/commands/`; `stop_guard.sh`, `session_end_snapshot.sh`, `session_start_recovery.sh`, `memory_write_guard.sh` → `.claude/hooks/`; `close_session_check.sh`, `quick_health.sh`, `rebuild_file_index.sh`, `check_pulse_freshness.sh`, `frozen_check.sh`, `smoke_hooks.sh`, `stamp_run.sh` → `System/scripts/`; `pulse_registry.example.txt` → `System/memory/`; `$SKILL_DIR/agents/*.md` → `.claude/agents/`; всем `.sh` — `chmod +x`
+  - ⚠️ **И ОБЯЗАТЕЛЬНО `session_liveness.py` → `System/scripts/`.** Без него `memory_write_guard.sh` **пропускает запись молча** (fail-open): хуки на месте, `ls` показывает четыре файла, а защиты от параллельных сессий нет вовсе. До v8.1 этот файл в списке копирования отсутствовал — если разворачивал по старой инструкции, скопируй сейчас.
+  - **Проверь установку ПРОГОНОМ, а не списком файлов (C5/C7):** `bash System/scripts/smoke_hooks.sh` → должно быть «SMOKE: ЗЕЛЁНЫЙ», 17 из 17. `ls` доказывает только наличие файлов; красный smoke = harness НЕ установлен. НЕ объявляй harness установленным до зелёного прогона.
+  - **Подагенты:** файлы в `.claude/agents/` обязаны иметь в заголовке `name:` и `description:` — без этих полей Claude Code подагента не видит вообще, а CLAUDE.md продолжает на него ссылаться. Проверка: подагент виден в списке доступных агентов сессии.
   - В `quick_health.sh` и `close_session_check.sh` подстроить лимиты под «Канон лимитов» (STRUCTURES.md)
   - Слить `$SKILL_DIR/harness/settings.hooks.snippet.json` в `.claude/settings.json` (PreToolUse + Stop + SessionEnd + SessionStart). Snippet — чистый валидный JSON (без `_comment`): нет settings.json → копируй целиком; есть → JSON-merge секций.
   - **АВТОНОМНОСТЬ scheduled-задач (КРИТИЧНО):** слить `$SKILL_DIR/harness/settings.permissions.snippet.json` в `.claude/settings.json` (блок `permissions`: широкий `allow` + `deny` на frozen-зоны/секреты; deny приоритетнее allow). Без `allow` фоновая задача ВИСНЕТ на промпте «разрешить Edit?» — владелец этого не видит, задача не отрабатывает. ⚠️ **Этот шаг выполняет ВЛАДЕЛЕЦ вручную** (через редактор или Customize/UI): агент НЕ может писать широкие allow-правила сам — harness блокирует самонаделение правами на исполнение кода (как NDA-блок). Альтернатива на задачу: в UI задачи выставить режим «Accept edits» или один раз «Run now» → «Always allow». **[подопечный]** если задачи читают папку меты — владелец добавляет `additionalDirectories: ["<абс. путь к мете>"]` в `permissions` (иначе кросс-проектное чтение виснет, C1).
@@ -274,7 +276,10 @@ description: Инициализация системы управления пр
 - [ ] Финальная верификация пройдена
 - [ ] **[мета]** STRATEGY.md создан
 - [ ] **[мета]** Еженедельный сканер подопечных настроен + PROJECT_PATHS.md создан
-- [ ] **[Claude Code]** Harness v2 установлен (`/end`, 4 хука вкл. memory_write_guard, quick_health, close_session_check, STARTUP шаги 0.1-0.4)
+- [ ] **[Claude Code]** Harness v5 установлен (`/end`, 4 хука вкл. memory_write_guard, `session_liveness.py`, quick_health, close_session_check, STARTUP шаги 0.1-0.4)
+- [ ] **[Claude Code]** `bash System/scripts/smoke_hooks.sh` = «SMOKE: ЗЕЛЁНЫЙ» 17/17 — хуки реально СРАБАТЫВАЮТ, а не просто лежат (список файлов этого не доказывает)
+- [ ] **[Claude Code]** `System/scripts/session_liveness.py` на месте — без него страж параллельных сессий молча выключен
+- [ ] **[Claude Code]** Подагенты в `.claude/agents/` видны в списке агентов сессии (нет `name`/`description` в заголовке — подагента не существует)
 - [ ] **[Claude Code]** `ls .claude/hooks/*.sh` = 4 файла (хуки физически на месте — C5)
 - [ ] **[Claude Code]** `.claude/settings.json` валиден (`python3 -c "import json;json.load(open('.claude/settings.json'))"`) И содержит непустой `permissions.allow` + секцию `hooks` (C7 — иначе scheduled-задачи виснут молча)
 - [ ] **[Claude Code]** `quick_health.sh` прогнан — отрабатывает без ошибок
