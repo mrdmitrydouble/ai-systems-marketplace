@@ -231,6 +231,18 @@ else
     fi
 fi
 
+# Страж параллельных сессий не слеп? (8.1.2) Внутри сессии Claude Code модуль живости обязан
+# видеть СВОЮ сессию. Не видит — сменился вид процесса claude, страж молча пропускает всё.
+if [ "${CLAUDECODE:-}" = "1" ] && [ -f "$PROJECT_ROOT/System/scripts/session_liveness.py" ]; then
+    SELF_PID=$(python3 -B "$PROJECT_ROOT/System/scripts/session_liveness.py" self 2>/dev/null)
+    if [ -n "$SELF_PID" ]; then
+        echo "  живость сессий: своя сессия видна (PID $SELF_PID) ✅"
+    else
+        echo "  🔴 живость сессий: модуль НЕ видит свою сессию — страж параллельных сессий слеп (сменился вид процесса claude → PAT в session_liveness.py)"
+        HARNESS_WARN=$((HARNESS_WARN + 1))
+    fi
+fi
+
 echo ""
 
 # --- СВОДКА PID ---

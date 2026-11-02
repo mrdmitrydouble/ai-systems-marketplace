@@ -27,6 +27,13 @@ NOW=$(date +%s)
 SID=$(echo "$HOOK_INPUT" | python3 -c "import sys,json
 try: print(json.load(sys.stdin).get('session_id',''))
 except: print('')" 2>/dev/null)
+# Снимок незакоммиченного на старте этой сессии (пишет SessionStart) — забираем ДО снятия маркера.
+START_SNAP=""
+if [ -n "$SID" ] && [ -f ".claude/live_sessions/${SID}.dirty" ]; then
+  START_SNAP=$(mktemp 2>/dev/null || echo "/tmp/snap_start_$$")
+  mv ".claude/live_sessions/${SID}.dirty" "$START_SNAP" 2>/dev/null || START_SNAP=""
+  [ -n "$START_SNAP" ] && trap 'rm -f "$START_SNAP"' EXIT
+fi
 [ -n "$SID" ] && rm -f ".claude/live_sessions/${SID}.marker" 2>/dev/null
 
 REASON=$(echo "$HOOK_INPUT" | python3 -c "import sys,json
@@ -59,6 +66,17 @@ SIGNIFICANT=$(printf '%s\n' "$UNCOMMITTED" | grep -v 'as-metrics\.jsonl' \
   | grep -v -E '__pycache__/|\.pyc"?$|System/state/|\.claude/(live_sessions/|\.session_incomplete\.json|\.session_closed\.flag|\.sess_marker_)' \
   | sed '/^[[:space:]]*$/d')
 [ -z "$SIGNIFICANT" ] && exit 0
+
+# Только работа ЭТОЙ сессии (v4.2, 8.1.2): сравниваем снимки незакоммиченного на старте и сейчас.
+# Новое или изменённое = работа сессии (в т.ч. git mv, cp -p, chmod — без свежей даты файла). Давние
+# черновики и давние удаления одинаковы в обоих снимках — не в счёт. Снимка нет (сессия открыта до
+# обновления, SessionStart не отработал) — по-старому: любая значимая незакоммиченная правка.
+if [ -n "$START_SNAP" ]; then
+  NOW_SNAP=$(python3 System/scripts/session_liveness.py dirty "$PROJECT_DIR" 15 2>/dev/null) && {
+    NEW_WORK=$(LC_ALL=C comm -13 <(LC_ALL=C sort "$START_SNAP") <(printf '%s\n' "$NOW_SNAP" | sed '/^$/d' | LC_ALL=C sort))
+    [ -z "$NEW_WORK" ] && exit 0
+  }
+fi
 
 mkdir -p .claude
 TIMESTAMP_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

@@ -19,8 +19,28 @@ mkdir -p .claude/live_sessions
 if [ -n "$SID" ]; then
   # v4 (29.06): живость по ПРОЦЕССУ, не по таймеру. строка1=ISO-время, строка2=root-PID claude.
   # PID нужен, чтобы любая сессия могла точно отличить живой процесс от крэш-маркера.
-  { date -u +"%Y-%m-%dT%H:%M:%SZ"; python3 System/scripts/session_liveness.py self 2>/dev/null; } \
-    > ".claude/live_sessions/${SID}.marker"
+  # v4.2 (8.1.2): строка3=эпоха старта, строка4=путь к журналу сессии (по нему соседи видят, работает
+  # ли она сейчас). Повторный SessionStart той же сессии (сжатие контекста, resume) старт НЕ сдвигает.
+  MY_MARKER=".claude/live_sessions/${SID}.marker"
+  MY_SNAP=".claude/live_sessions/${SID}.dirty"
+  HOOK_META=$(printf '%s' "$HOOK_STDIN" | python3 -c "import sys,json
+try: d=json.load(sys.stdin)
+except Exception: d={}
+print(d.get('source','')); print(d.get('transcript_path',''))" 2>/dev/null)
+  SOURCE=$(printf '%s\n' "$HOOK_META" | sed -n 1p); TRANSCRIPT=$(printf '%s\n' "$HOOK_META" | sed -n 2p)
+  START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); START_EPOCH=$(date +%s)
+  OLD_EPOCH=$(sed -n 3p "$MY_MARKER" 2>/dev/null | tr -cd '0-9')
+  if [ -n "$OLD_EPOCH" ]; then START_ISO=$(sed -n 1p "$MY_MARKER"); START_EPOCH="$OLD_EPOCH"; fi
+  MY_PID=$(python3 System/scripts/session_liveness.py self 2>/dev/null | head -1)
+  printf '%s\n%s\n%s\n%s\n' "$START_ISO" "$MY_PID" "$START_EPOCH" "$TRANSCRIPT" > "$MY_MARKER"
+  # Снимок незакоммиченного на старте — один на сессию: по разнице со снимком конца SessionEnd видит
+  # работу ЭТОЙ сессии. Повторный старт снимок не трогает; сжатие без снимка (сессия открыта до
+  # обновления) его не создаёт — конец сессии тогда судит по-старому: любая значимая правка.
+  # Потолок 4 с: на огромном неотслеживаемом дереве хук не выйдет за бюджет и не потеряет RECOVERY ниже.
+  if [ ! -f "$MY_SNAP" ] && [ "$SOURCE" != "compact" ]; then
+    python3 System/scripts/session_liveness.py dirty "$PROJECT_DIR" 4 > "$MY_SNAP.tmp" 2>/dev/null \
+      && mv "$MY_SNAP.tmp" "$MY_SNAP" || rm -f "$MY_SNAP.tmp"
+  fi
 fi
 # Подмести маркеры МЁРТВЫХ процессов — по факту процесса (kill-уровень точность, не таймер 2ч).
 # Свой маркер только что записан с живым PID → переживёт. Pidless-маркеры старого формата: фолбэк >8ч.
@@ -42,6 +62,19 @@ if [ -f "$LOCK" ]; then
 fi
 
 MARKER=".claude/.session_incomplete.json"
+# v4.2 (8.1.2): маркер «прошлая сессия не закрыта» при ЧИСТОМ дереве и без снапшота устарел —
+# незакоммиченной работы нет и восстанавливать нечего (её закоммитили позже или отбросили). Снимаем
+# молча. Есть snapshot_ref — НЕ снимаем: в нём может лежать отброшенная правка (git stash apply).
+# Фильтр «не работа» — тот же, что в session_end_snapshot.sh (держать синхронно).
+if [ -f "$MARKER" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+  DIRT=$(git status --porcelain 2>/dev/null | grep -v 'as-metrics\.jsonl' \
+    | grep -v -E '__pycache__/|\.pyc"?$|System/state/|\.claude/(live_sessions/|\.session_incomplete\.json|\.session_closed\.flag|\.sess_marker_)' \
+    | sed '/^[[:space:]]*$/d')
+  SNAP_REF=$(python3 -c "import json,sys
+try: print(json.load(open(sys.argv[1], encoding='utf-8')).get('snapshot_ref', ''))
+except Exception: print('?')" "$MARKER" 2>/dev/null || echo '?')
+  [ -z "$DIRT" ] && [ -z "$SNAP_REF" ] && rm -f "$MARKER"
+fi
 # Несмёрженные инбоксы параллельных сессий (Пакет C: гарантия слияния, не «надежда на промпт»)
 INBOX_CNT=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
 INBOX_LIST=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" -exec basename {} \; 2>/dev/null | tr '\n' ',' | sed 's/,$//')

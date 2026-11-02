@@ -173,6 +173,23 @@ Frozen-файлы НЕ ИЗМЕНИЛИСЬ? Сравнить размеры с 
 
 ## МИГРАЦИЯ С ПРЕДЫДУЩИХ ВЕРСИЙ
 
+### harness v5.1 → v5.2 (skill 8.1.2, Repair — структура не меняется)
+
+Страж параллельных сессий снова видит сессии (десктоп сменил путь к claude — модуль живости месяцами не
+находил ни одной) и перестаёт дёргать зря: мешает только сессия, которая работает сейчас, а не просто
+открыта; «прошлая сессия не закрыта» — только за работу этой сессии. Сначала — шаг v5 → v5.1 ниже.
+1. **Заменить 5 файлов:** `session_liveness.py`, `smoke_hooks.sh` → `System/scripts/`; `memory_write_guard.sh`,
+   `session_start_recovery.sh`, `session_end_snapshot.sh` → `.claude/hooks/`.
+2. **Точечные правки** (эти файлы подстроены под проект — целиком не заменять): `end.md` — Шаг 0а и ветка
+   «рядом работает другая сессия» в Шаге 3 из `harness/end.md`; `close_session_check.sh`, Блок 5 —
+   `session_liveness.py rivals` → `blocking`; `quick_health.sh` — блок «Страж параллельных сессий не слеп?»
+   из `harness/quick_health.sh` (перед сводкой PID).
+3. **Оракул:** `bash System/scripts/smoke_hooks.sh` → «SMOKE: ЗЕЛЁНЫЙ», 37 из 37; внутри сессии Claude Code
+   `python3 System/scripts/session_liveness.py report "$PWD"` → «Мой root-PID» — число, а не None.
+4. **Открытые окна:** сессии, открытые в этой папке во время обновления, закрой и открой заново. До
+   перезапуска у них нет маркера нового вида: страж их не видит, а при закрытии они судят «не закрыта»
+   по-старому (любая незакоммиченная правка).
+
 ### harness v5 → v5.1 (skill 8.1.1, Repair — структура не меняется)
 
 Чинит ложное «прошлая сессия не закрыта» после scheduled-прогонов. Причины: страж импортировал
@@ -185,7 +202,7 @@ live-маркеры соседних сессий, и сам старый мар
    `.claude/live_sessions/`, `.claude/.session_incomplete.json`, `.claude/.session_closed.flag`. Висящий
    `.claude/.session_incomplete.json`, у которого в `changed_files` нет ничего, кроме `__pycache__`, `System/state/`,
    `.claude/live_sessions/` и самого маркера, — ложный: удалить.
-3. **Оракул:** `bash System/scripts/smoke_hooks.sh` → «SMOKE: ЗЕЛЁНЫЙ», 24 из 24.
+3. **Оракул:** `bash System/scripts/smoke_hooks.sh` → «SMOKE: ЗЕЛЁНЫЙ» (все проверки).
 
 ### harness v3 → v4 (внутри skill v8 — без смены версии скилла)
 

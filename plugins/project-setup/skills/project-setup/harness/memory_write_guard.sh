@@ -6,8 +6,10 @@
 #   Логику живости держит System/scripts/session_liveness.py (один источник истины, переиспользуют /end и старт).
 # v4.1 02.11 (спора 8.1.1): импорт без байткода — иначе Python кладёт System/scripts/__pycache__/,
 #   дерево навсегда «грязное», и каждый прогон без /end (scheduled!) оставляет ложный RECOVERY-маркер.
+# v4.2 02.11 (спора 8.1.2): блокирует только сессия, которая РАБОТАЕТ СЕЙЧАС (журнал писался последние
+#   10 мин); открытое, но простаивающее окно не мешает (логика — session_liveness.blocking_rivals).
 # 1) Frozen zones: блок записи в Project/Sources, System/archive, _backup, Project/Archive.
-# 2) Коллизия сессий: запись в System/memory/ или CLAUDE.md при ЖИВОМ не-scheduled сопернике → инбокс.
+# 2) Коллизия сессий: запись в System/memory/ или CLAUDE.md, пока рядом РАБОТАЕТ другая (не scheduled) сессия → инбокс.
 
 set -u
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
@@ -68,7 +70,7 @@ if rivals:
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": (
-            "ПАРАЛЛЕЛЬНАЯ РАБОТА (это не ошибка): в папке есть другая ЖИВАЯ сессия —\n"
+            "ПАРАЛЛЕЛЬНАЯ РАБОТА (это не ошибка): в этой папке прямо сейчас работает другая сессия —\n"
             f"{who}\n"
             "Общие файлы памяти сейчас не редактируем, чтобы не затирать друг друга. "
             f"Запиши свою дельту в персональный инбокс: Write → {inbox} "

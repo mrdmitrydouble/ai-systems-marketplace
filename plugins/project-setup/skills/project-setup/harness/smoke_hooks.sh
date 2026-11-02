@@ -13,6 +13,14 @@
 #                       live-маркер соседней сессии, отметку прогона (System/state/) и сам старый
 #                       маркер · но пишет маркер при настоящей
 #                       незакоммиченной правке (позитивный контроль)
+#   распознавание сессий (8.1.2): все виды установки claude по точному argv[0], но не помощники, GUI и
+#                       чужие аргументы · вложенный claude — часть сессии, PID 1 — сессия · блокирует только
+#                       работающая сессия, в т.ч. через субагента · подметание не трогает свой маркер ·
+#                       журнал ищется по пути из маркера и в CLAUDE_CONFIG_DIR
+#   «не закрыта» только за работу этой сессии (8.1.2, разница снимков старта и конца): давний черновик и
+#                       давнее удаление — не работа; правка, git mv, cp -p, chmod — работа · устаревший
+#                       маркер без снапшота при чистом дереве снимается молча, со снапшотом — нет · при
+#                       незакоммиченной работе — RECOVERY · сжатие не сдвигает старт и не переснимает снимок
 #   dead-path детектор (логика quick_health): 2 мёртвых cwd → count=2 + оба id ; disabled не считается
 #
 # Запуск: bash System/scripts/smoke_hooks.sh   (см. также quick_health.sh — детектор dead-path)
@@ -46,6 +54,95 @@ if python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_li
 else
   bad "нет рабочего System/scripts/session_liveness.py → страж параллельных сессий молча выключен"
 fi
+
+echo "=== SMOKE: распознавание сессий (модуль живости проекта) ==="
+LIVE_MOD="$PROJECT_ROOT/System/scripts"
+# T1) кто считается сессией claude: по точному argv[0] (`ps -o comm`), по заголовку процесса «claude»
+#     и node/bun со скриптом claude. Класс бага 8.1.2: десктоп сменил путь к claude — страж месяцами
+#     молча никого не видел. Отрицательные случаи — помощник disclaimer, GUI и чужие аргументы с «/claude».
+PAT_RES=$(python3 -B - "$LIVE_MOD" 2>&1 <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+APP = "/Users/u/Library/Application Support/Claude/claude-code"
+NEW = APP + "/2.1.309/5af865b9901c/claude.app/Contents/MacOS/claude"
+GUI = "/Applications/Claude.app/Contents"
+yes = [(NEW, NEW + " --output-format stream-json"), (APP + "/2.1.150/claude", APP + "/2.1.150/claude --verbose"),
+       ("claude", "claude --resume"), ("/Users/u/.local/bin/claude", "/Users/u/.local/bin/claude -p hi"),
+       ("/home/u/.local/share/claude/versions/2.1.220", "/home/u/.local/share/claude/versions/2.1.220 --continue"),
+       ("node", "claude --resume"), ("node", "node /usr/local/bin/claude"),
+       ("/opt/homebrew/bin/node", "/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"),
+       ("node", "node --max-old-space-size=4096 /Users/u/.npm/_npx/1/node_modules/.bin/claude")]
+no = [(GUI + "/Helpers/disclaimer", GUI + "/Helpers/disclaimer --pgroup -- " + NEW + " --output-format stream-json"),
+      (GUI + "/MacOS/Claude", GUI + "/MacOS/Claude"),
+      (GUI + "/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)",
+       GUI + "/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --type=renderer"),
+      ("node", "node /Users/u/.claude/plugins/cache/x/server.js"), ("python3", "python3 System/scripts/session_liveness.py self"),
+      ("grep", "grep claude"), ("vim", "vim claude.md"), ("/bin/zsh", "/bin/zsh -c claude plugin list"),
+      ("/bin/zsh", "/bin/zsh -c export X=/Users/u/.local/bin/claude"), ("/usr/bin/python3", "/usr/bin/python3 ./claude"),
+      ("/opt/homebrew/bin/uv", "/opt/homebrew/bin/uv run --directory=/Users/u/mcp/claude"),
+      ("/usr/bin/claude-monitor", "/usr/bin/claude-monitor")]
+bad = ["не узнал: " + c for a, c in yes if not L.is_claude_proc(a, c)] + \
+      ["ложно узнал: " + c for a, c in no if L.is_claude_proc(a, c)]
+print("\n".join(bad) if bad else "OK")
+PYEOF
+)
+[ "$PAT_RES" = "OK" ] && ok "сессии claude узнаются во всех видах установки; помощники, GUI и чужие аргументы — нет" \
+  || bad "распознавание сессий: $(echo "$PAT_RES" | tail -3 | tr '\n' ';')"
+
+# T2) сессия = самый верхний claude в цепочке: claude, запущенный изнутри сессии, — не соперник;
+#     claude с PID 1 (контейнер) — тоже сессия
+NEST=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+parent = {"100": "1", "101": "100", "102": "101", "103": "102", "200": "1", "201": "200"}
+claude = {"101", "103", "201"}
+r = sorted(L._roots(parent, claude)); t = L._top_claude("103", parent, claude)
+c = {"1": "0", "5": "1"}; p1 = L._roots(c, {"1"}) == ["1"] and L._top_claude("5", c, {"1"}) == "1"
+print("OK" if r == ["101", "201"] and t == "101" and p1 else "roots=%s top=%s pid1=%s" % (r, t, p1))' "$LIVE_MOD" 2>&1 | tail -1)
+[ "$NEST" = "OK" ] && ok "вложенный claude — часть своей сессии; claude с PID 1 (контейнер) — сессия" || bad "вложенность: $NEST"
+
+# T3) мешает только сессия, которая работает сейчас: её журнал или журнал её субагента писался
+#     < ACTIVE_MIN мин назад. Простаивающая, по расписанию, без маркера и без журнала — не блокируют.
+AH="$SBX/home"; AD="$SBX/act_proj"; AP="$AH/.claude/projects/p"
+mkdir -p "$AP/sE/subagents" "$AD/.claude/live_sessions"
+for pair in sA:111 sB:222 sC:333 sE:555 sF:666; do printf 't\n%s\n0\n' "${pair#*:}" > "$AD/.claude/live_sessions/${pair%%:*}.marker"; done
+printf '%s\n' '{"type":"user","message":{"content":"работаю"}}' > "$AP/sA.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"старое окно"}}' > "$AP/sB.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"<scheduled-task name=\"digest\">прогон</scheduled-task>"}}' > "$AP/sC.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"жду субагента"}}' > "$AP/sE.jsonl"
+printf '%s\n' '{"type":"assistant"}' > "$AP/sE/subagents/agent-1.jsonl"
+touch -t 202601010000 "$AP/sB.jsonl" "$AP/sE.jsonl"
+ST=$(HOME="$AH" CLAUDE_CONFIG_DIR="" python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+print(" ".join(L._state(sys.argv[2], p)[0] for p in ("111", "222", "333", "444", "555", "666")))' "$LIVE_MOD" "$AD" 2>&1 | tail -1)
+[ "$ST" = "active idle scheduled unknown active nolog" ] \
+  && ok "блокирует только работающая сессия (в т.ч. через субагента); простаивающая, по расписанию, без маркера — нет" \
+  || bad "состояния сессий: [$ST], ожидалось [active idle scheduled unknown active nolog]"
+
+# T4) подметание снимает маркер мёртвой сессии, но не свой (иначе старт сессии стирается сразу после
+#     записи). Снимок мёртвой сессии остаётся — она может вернуться после сбоя (resume); осиротевшие
+#     снимки старше 7 дней и брошенные *.dirty.tmp старше часа — убираются.
+SW=$(python3 -B -c 'import sys, os, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+d = sys.argv[2]; reg = os.path.join(d, ".claude", "live_sessions"); os.makedirs(reg, exist_ok=True)
+def mk(name, body, age=0):
+    p = os.path.join(reg, name); open(p, "w").write(body)
+    if age: os.utime(p, (time.time() - age, time.time() - age))
+mk("me.marker", "t\n999\n0\n"); mk("dead.marker", "t\n998\n0\n"); mk("dead.dirty", "")
+mk("old.dirty", "", 8 * 86400); mk("x.dirty.tmp", "", 7200)
+L.live_pids = lambda _d: []
+L.self_pid = lambda start=None: "999"
+L.sweep(d); left = sorted(os.listdir(reg))
+print("OK" if left == ["dead.dirty", "me.marker"] else "осталось: %s" % left)' "$LIVE_MOD" "$SBX/sweep_proj" 2>&1 | tail -1)
+[ "$SW" = "OK" ] && ok "подметание: маркер мёртвой сессии снят, свой и снимок для возврата после сбоя — на месте, мусор убран" \
+  || bad "подметание: $SW"
+
+# T5) журнал ищется там, где его держит Claude Code: путь из маркера (строка 4) и $CLAUDE_CONFIG_DIR
+CF="$SBX/cfg"; CD="$SBX/cfg_proj"
+mkdir -p "$CF/projects/q" "$CD/.claude/live_sessions" "$SBX/elsewhere"
+printf '%s\n' '{"type":"user","message":{"content":"x"}}' > "$CF/projects/q/sG.jsonl"
+printf '%s\n' '{"type":"user","message":{"content":"y"}}' > "$SBX/elsewhere/any-name.jsonl"
+printf 't\n777\n0\n\n' > "$CD/.claude/live_sessions/sG.marker"
+printf 't\n888\n0\n%s\n' "$SBX/elsewhere/any-name.jsonl" > "$CD/.claude/live_sessions/sH.marker"
+CS=$(HOME="$SBX/nohome" CLAUDE_CONFIG_DIR="$CF" python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+print(L._state(sys.argv[2], "777")[0], L._state(sys.argv[2], "888")[0])' "$LIVE_MOD" "$CD" 2>&1 | tail -1)
+[ "$CS" = "active active" ] && ok "журнал сессии находится по пути из маркера и в CLAUDE_CONFIG_DIR" \
+  || bad "поиск журнала: [$CS], ожидалось [active active]"
 
 echo "=== SMOKE: memory_write_guard ==="
 
@@ -196,6 +293,81 @@ printf ' changed' >> "$RREPO/notes.md"
 printf '{"session_id":"live1","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
 grep -q 'notes.md' "$MARKER" 2>/dev/null && ok "настоящая правка → маркер пишется (фильтр не глушит работу)" \
   || bad "маркер НЕ записан при реальной незакоммиченной правке"
+
+echo "=== SMOKE: «не закрыта» — только за работу этой сессии ==="
+# Класс бага 8.1.2: давний незакоммиченный черновик делал «незакрытой» КАЖДУЮ сессию, а маркер при
+# чистом дереве висел месяцами. Работа сессии = разница снимков незакоммиченного на старте и в конце
+# (снимки пишет модуль живости проекта, поэтому он копируется в песочницу).
+WREPO="$SBX/work_repo"; WM="$WREPO/.claude/.session_incomplete.json"
+mkdir -p "$WREPO/System/scripts" "$WREPO/.claude/live_sessions"
+cp "$LIVE_MOD/session_liveness.py" "$WREPO/System/scripts/" 2>/dev/null
+( cd "$WREPO" && git init -q && git config user.email s@s && git config user.name s && git config commit.gpgsign false \
+  && printf 'x' > System/scripts/tool.sh && printf '{}' > .claude/settings.json && printf 'base' > notes.md \
+  && printf 'old' > old.txt && git add System .claude/settings.json notes.md old.txt && git commit -q -m base )
+start_hook() { printf '{"session_id":"%s","source":"%s"}' "$1" "${2:-startup}" \
+  | CLAUDE_PROJECT_DIR="$WREPO" bash "$HOOKS/session_start_recovery.sh" 2>/dev/null; }
+end_hook() { printf '{"session_id":"%s","reason":"other"}' "$1" \
+  | CLAUDE_PROJECT_DIR="$WREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1; }
+
+# W1) давний черновик и давнее удаление лежат в дереве ДО старта → сессия ничего не сделала → маркера нет
+printf 'draft' > "$WREPO/draft.docx"; rm -f "$WREPO/old.txt"
+start_hook w1 >/dev/null; end_hook w1
+[ ! -f "$WM" ] && ok "давний черновик и давнее удаление → маркер НЕ пишется (работа не этой сессии)" \
+  || bad "давняя незакоммиченная грязь делает каждую сессию «незакрытой»"
+
+# W2) та же давняя грязь + правка этой сессии → маркер пишется и называет файл
+start_hook w2 >/dev/null; printf ' edit' >> "$WREPO/notes.md"; end_hook w2
+grep -q 'notes.md' "$WM" 2>/dev/null && ok "правка этой сессии поверх давней грязи → маркер пишется" \
+  || bad "работа этой сессии не попала в маркер"
+rm -f "$WM"; ( cd "$WREPO" && git checkout -q -- notes.md )
+
+# W2б) работа без свежей даты файла — git mv, cp -p старого файла, chmod — тоже работа сессии
+touch -t 202601010000 "$WREPO/System/scripts/tool.sh"
+i=0; MISSED=""
+for act in "git mv notes.md notes2.md" "cp -p System/scripts/tool.sh copy.sh" "chmod +x notes.md"; do
+  i=$((i + 1)); rm -f "$WM"
+  start_hook "w2b$i" >/dev/null; ( cd "$WREPO" && eval "$act" ); end_hook "w2b$i"
+  [ -f "$WM" ] || MISSED="$MISSED [$act]"
+  ( cd "$WREPO" && git reset -q --hard && rm -f copy.sh )
+done
+[ -z "$MISSED" ] && ok "git mv, cp -p и chmod → маркер пишется (работа без свежей даты файла)" \
+  || bad "не увидел работу сессии:$MISSED"
+
+# W3) старт: маркер при чистом дереве и без снапшота устарел → снимается молча, без RECOVERY
+( cd "$WREPO" && git reset -q --hard && rm -f draft.docx )
+printf '{"timestamp":"old","snapshot_ref":""}' > "$WM"
+OUT=$(start_hook w3)
+{ [ ! -f "$WM" ] && ! echo "$OUT" | grep -q "RECOVERY"; } && ok "старт: устаревший маркер в чистом дереве снят молча" \
+  || bad "старт: устаревший маркер при чистом дереве всё ещё даёт RECOVERY"
+
+# W3б) маркер со снапшотом (там может лежать отброшенная правка) при чистом дереве НЕ снимается
+printf '{"timestamp":"t","snapshot_ref":"0123abcd"}' > "$WM"
+OUT=$(start_hook w3b)
+{ [ -f "$WM" ] && echo "$OUT" | grep -q "RECOVERY MODE"; } && ok "старт: маркер со снапшотом при чистом дереве не снимается (RECOVERY)" \
+  || bad "старт: снят маркер, в снапшоте которого может лежать отброшенная правка"
+
+# W4) старт: маркер + незакоммиченная работа → RECOVERY, маркер на месте (защита P-001 не ослабла)
+printf ' edit' >> "$WREPO/notes.md"; printf '{"timestamp":"t"}' > "$WM"
+OUT=$(start_hook w4)
+{ [ -f "$WM" ] && echo "$OUT" | grep -q "RECOVERY MODE"; } && ok "старт: маркер + незакоммиченная работа → RECOVERY" \
+  || bad "старт: настоящая незавершённая сессия НЕ дала RECOVERY"
+rm -f "$WM"; ( cd "$WREPO" && git checkout -q -- notes.md )
+
+# W5) повторный старт той же сессии (сжатие контекста) не сдвигает её начало и не переснимает снимок
+start_hook w5 >/dev/null
+OLD_START=$(( $(date +%s) - 7200 ))
+sed -i.bak "3s/.*/$OLD_START/" "$WREPO/.claude/live_sessions/w5.marker"; rm -f "$WREPO/.claude/live_sessions/w5.marker.bak"
+printf 'stamp\n' >> "$WREPO/.claude/live_sessions/w5.dirty"
+start_hook w5 compact >/dev/null
+{ [ "$(sed -n 3p "$WREPO/.claude/live_sessions/w5.marker" 2>/dev/null)" = "$OLD_START" ] \
+  && grep -q stamp "$WREPO/.claude/live_sessions/w5.dirty" 2>/dev/null; } \
+  && ok "повторный старт (сжатие контекста) не сдвигает начало сессии и не переснимает снимок" \
+  || bad "повторный SessionStart сдвинул начало сессии или переснял её снимок"
+
+# W5б) сжатие у сессии без снимка (открыта до обновления) снимок НЕ создаёт → конец судит по-старому
+start_hook w5b compact >/dev/null
+[ ! -f "$WREPO/.claude/live_sessions/w5b.dirty" ] && ok "сжатие без снимка его не создаёт (работа до сжатия не потеряется)" \
+  || bad "сжатие создало снимок с середины сессии → работа до сжатия не попадёт в маркер"
 
 echo "=== SMOKE: dead-path детектор (логика quick_health) ==="
 # Контракт ДОЛЖЕН совпадать с блоком dead-path в quick_health.sh (секция [HARNESS]).
