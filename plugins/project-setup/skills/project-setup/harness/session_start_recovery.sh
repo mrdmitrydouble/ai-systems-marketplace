@@ -67,7 +67,7 @@ MARKER=".claude/.session_incomplete.json"
 # молча. Есть snapshot_ref — НЕ снимаем: в нём может лежать отброшенная правка (git stash apply).
 # Фильтр «не работа» — тот же, что в session_end_snapshot.sh (держать синхронно).
 if [ -f "$MARKER" ] && git rev-parse --git-dir >/dev/null 2>&1; then
-  DIRT=$(git status --porcelain 2>/dev/null | grep -v 'as-metrics\.jsonl' \
+  DIRT=$(git -c core.quotepath=off status --porcelain 2>/dev/null | grep -v 'as-metrics\.jsonl' \
     | grep -v -E '__pycache__/|\.pyc"?$|System/state/|\.claude/(live_sessions/|\.session_incomplete\.json|\.session_closed\.flag|\.sess_marker_)' \
     | sed '/^[[:space:]]*$/d')
   SNAP_REF=$(python3 -c "import json,sys
@@ -121,7 +121,7 @@ if inbox_cnt and inbox_cnt != "0":
     inbox_list = os.environ.get("RC_INBOX_LIST", "")
     parts.append(
         f"📥 СЛЕЙ ИНБОКСЫ ПЕРЕД РАБОТОЙ: в System/memory/inbox_sessions/ есть {inbox_cnt} несмёрженных "
-        f"дельт параллельных сессий ({inbox_list}). ОБЯЗАТЕЛЬНО выполни шаг 0.6 STARTUP (слияние инбоксов) "
+        f"дельт параллельных сессий ({inbox_list}). ОБЯЗАТЕЛЬНО выполни шаг слияния инбоксов из STARTUP "
         "ДО любой другой работы: прочитай каждый файл, влей содержимое по заголовкам «## для X» в целевой "
         "файл памяти, удали файл-инбокс. Это harness-гейт (Пакет C) — данные параллельных сессий не должны "
         "зависнуть несмёрженными (был недельный завал в подопечных)."

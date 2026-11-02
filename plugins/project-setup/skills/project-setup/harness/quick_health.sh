@@ -231,16 +231,23 @@ else
     fi
 fi
 
-# Страж параллельных сессий не слеп? (8.1.2) Внутри сессии Claude Code модуль живости обязан
-# видеть СВОЮ сессию. Не видит — сменился вид процесса claude, страж молча пропускает всё.
+# Страж параллельных сессий не слеп? (8.1.2; 8.1.3 — привязка к папке) Внутри сессии Claude Code модуль
+# живости обязан видеть СВОЮ сессию среди открытых в этой папке и находить её маркер. Не видит сессию —
+# сменился вид процесса claude; не находит маркер — страж не знает, кто работает (так было в папках
+# со скобками [GitHub]). В обоих случаях страж молча пропускает всё.
 if [ "${CLAUDECODE:-}" = "1" ] && [ -f "$PROJECT_ROOT/System/scripts/session_liveness.py" ]; then
-    SELF_PID=$(python3 -B "$PROJECT_ROOT/System/scripts/session_liveness.py" self 2>/dev/null)
-    if [ -n "$SELF_PID" ]; then
-        echo "  живость сессий: своя сессия видна (PID $SELF_PID) ✅"
-    else
-        echo "  🔴 живость сессий: модуль НЕ видит свою сессию — страж параллельных сессий слеп (сменился вид процесса claude → PAT в session_liveness.py)"
-        HARNESS_WARN=$((HARNESS_WARN + 1))
-    fi
+    LIVE_SELF=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+p = L.self_pid(); d = sys.argv[2]
+print("blind" if not p else "elsewhere" if p not in L.live_pids(d) else ("ok " + p) if L._marker_for_pid(d, p)[0] else "nomarker " + p)' \
+        "$PROJECT_ROOT/System/scripts" "$PROJECT_ROOT" 2>/dev/null)
+    case "$LIVE_SELF" in
+        ok*)        echo "  живость сессий: своя сессия видна, маркер найден (PID ${LIVE_SELF#ok }) ✅" ;;
+        elsewhere)  echo "  живость сессий: не проверено — эта сессия открыта не в папке проекта" ;;
+        nomarker*)  echo "  🔴 живость сессий: маркер своей сессии не найден — страж не видит, кто работает (окно открыто до обновления обвязки → перезапусти его)"
+                    HARNESS_WARN=$((HARNESS_WARN + 1)) ;;
+        *)          echo "  🔴 живость сессий: модуль НЕ видит свою сессию — страж параллельных сессий слеп (сменился вид процесса claude → PAT в session_liveness.py)"
+                    HARNESS_WARN=$((HARNESS_WARN + 1)) ;;
+    esac
 fi
 
 echo ""

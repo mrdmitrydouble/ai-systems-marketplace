@@ -6,6 +6,10 @@
 #   строка3=эпоха старта, строка4=путь к журналу сессии. Рядом <sid>.dirty — снимок незакоммиченного
 #   на старте: по разнице снимков старта и конца SessionEnd видит работу ЭТОЙ сессии.
 #
+# v5.2.1 (02.11, спора 8.1.3): путь проекта в glob экранируется (glob.escape). Папка вида
+#   «7. Venture Lovers [GitHub]» — для glob это шаблон «один из символов», маркеры не находились никогда:
+#   страж считал все сессии «без маркера» и не блокировал (fail-open). Найдено живой проверкой раскатки.
+#   Окно без снимка старта (открыто до обновления) судит о своей работе по времени старта процесса (since).
 # v5.2 (02.11, спора 8.1.2):
 #   - claude узнаём по ТОЧНОМУ argv[0] (`ps -o comm`: на macOS — полный путь, в т.ч. с пробелами)
 #     во всех видах установки: десктоп нового вида …/claude-code/<вер>/<хеш>/claude.app/Contents/
@@ -29,6 +33,7 @@
 #   describe <dir>  → человекочитаемый список соперников с состоянием
 #   sweep <dir>     → удалить маркеры мёртвых процессов (печатает что снято)
 #   dirty <dir> [сек] → снимок значимого незакоммиченного (для SessionStart/SessionEnd; сек — потолок)
+#   since <dir> [сек] → значимое незакоммиченное, изменённое после старта моей сессии (SessionEnd без снимка)
 #   report <dir>    → всё вместе (диагностика)
 
 import sys, os, re, glob, subprocess, time
@@ -150,7 +155,7 @@ def rivals(d, me=None):
 def _marker_for_pid(d, pid):
     """(sid, строки маркера) сессии с этим root-PID; (None, []) — маркера нет."""
     reg = os.path.join(d, ".claude", "live_sessions")
-    for m in glob.glob(os.path.join(reg, "*.marker")):
+    for m in glob.glob(os.path.join(glob.escape(reg), "*.marker")):
         try:
             with open(m, encoding="utf-8", errors="ignore") as f:
                 lines = f.read().splitlines()
@@ -169,7 +174,7 @@ def _transcript(sid, lines=()):
         return None
     bases = {os.environ.get("CLAUDE_CONFIG_DIR") or "", os.path.expanduser("~/.claude")} - {""}
     for base in bases:
-        hits = glob.glob(os.path.join(base, "projects", "*", f"{sid}.jsonl"))
+        hits = glob.glob(os.path.join(glob.escape(base), "projects", "*", f"{sid}.jsonl"))
         if hits:
             return hits[0]
     return None
@@ -208,7 +213,7 @@ def _last_activity(path):
     """Время последней записи сессии: её журнал и журналы её субагентов (<sid>/subagents/*.jsonl) —
        пока субагент работает, основной журнал может молчать десятки минут."""
     times = []
-    for p in [path] + glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "*.jsonl")):
+    for p in [path] + glob.glob(os.path.join(glob.escape(path[:-len(".jsonl")]), "subagents", "*.jsonl")):
         try:
             times.append(os.path.getmtime(p))
         except OSError:
@@ -274,7 +279,7 @@ def sweep(d):
     live = set(live_pids(d))
     me = self_pid()
     swept = []
-    for m in glob.glob(os.path.join(reg, "*.marker")):
+    for m in glob.glob(os.path.join(glob.escape(reg), "*.marker")):
         try:
             with open(m, encoding="utf-8", errors="ignore") as f:
                 lines = f.read().splitlines()
@@ -286,13 +291,13 @@ def sweep(d):
         except Exception:
             pass
     now = time.time()
-    for snap in glob.glob(os.path.join(reg, "*.dirty")):      # осиротевшие снимки без маркера
+    for snap in glob.glob(os.path.join(glob.escape(reg), "*.dirty")):      # осиротевшие снимки без маркера
         try:
             if not os.path.exists(snap[:-len(".dirty")] + ".marker") and now - os.path.getmtime(snap) > 7 * 86400:
                 os.remove(snap)
         except Exception:
             pass
-    for tmp in glob.glob(os.path.join(reg, "*.dirty.tmp")):   # снимок, прерванный посреди записи
+    for tmp in glob.glob(os.path.join(glob.escape(reg), "*.dirty.tmp")):   # снимок, прерванный посреди записи
         try:
             if now - os.path.getmtime(tmp) > 3600:
                 os.remove(tmp)
@@ -336,6 +341,29 @@ def dirty_entries(d, timeout=None):
         out.append(f"{code}\t{safe}\t{meta}")
     return sorted(out)
 
+def _proc_start(pid):
+    """Эпоха старта процесса (ps -o lstart: «Mon Nov  2 14:03:21 2026» — одинаково на macOS и Linux).
+       LC_ALL=C обязателен: в русской локали macOS печатает «понедельник, 2 ноября 2026 г. …», разбор падал,
+       и окно без снимка тихо судило по-старому (найдено третьей сверкой раскатки)."""
+    out = _sh(["env", "LC_ALL=C", "ps", "-o", "lstart=", "-p", str(pid)]).strip()
+    return time.mktime(time.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y"))
+
+def work_since_start(d, timeout=None, slack=60):
+    """Работа сессии, у которой нет снимка старта (окно открыто до обновления обвязки, 8.1.3): значимое
+       незакоммиченное, изменённое после старта её процесса. git mv / cp -p / chmod / удаления так не
+       видны — компромисс переходного окна; до 8.1.3 такое окно считало работой ВСЁ незакоммиченное,
+       включая давние черновики. Свою сессию не нашли — исключение, и вызывающий судит по-старому."""
+    pid = self_pid()
+    if not pid:
+        raise RuntimeError("своя сессия не найдена")
+    edge = (_proc_start(pid) - slack) * 1e9
+    out = []
+    for line in dirty_entries(d, timeout):
+        mt = line.rsplit("\t", 1)[-1]
+        if mt.isdigit() and int(mt) >= edge:
+            out.append(line)
+    return out
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
     d = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
@@ -352,6 +380,10 @@ def main():
     elif cmd == "sweep":
         for s in sweep(d):
             print(s)
+    elif cmd == "since":
+        limit = float(sys.argv[3]) if len(sys.argv) > 3 else None
+        for line in work_since_start(d, limit):
+            print(line)
     elif cmd == "dirty":
         limit = float(sys.argv[3]) if len(sys.argv) > 3 else None
         for line in dirty_entries(d, limit):

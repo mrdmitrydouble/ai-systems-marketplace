@@ -54,7 +54,7 @@ fi
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 # Чистое дерево → сессия ничего не меняла → не пишем маркер (фикс цикла marker-only WIP)
-UNCOMMITTED=$(git status --porcelain 2>/dev/null)
+UNCOMMITTED=$(git -c core.quotepath=off status --porcelain 2>/dev/null)
 [ -z "$UNCOMMITTED" ] && exit 0
 # Не «работа» — не плодим incomplete-маркер/снапшот:
 #   телеметрия as-metrics.jsonl (v4, 29.06: осиротевшие wip-снапшоты от scheduled-прогонов);
@@ -70,18 +70,31 @@ SIGNIFICANT=$(printf '%s\n' "$UNCOMMITTED" | grep -v 'as-metrics\.jsonl' \
 # Только работа ЭТОЙ сессии (v4.2, 8.1.2): сравниваем снимки незакоммиченного на старте и сейчас.
 # Новое или изменённое = работа сессии (в т.ч. git mv, cp -p, chmod — без свежей даты файла). Давние
 # черновики и давние удаления одинаковы в обоих снимках — не в счёт. Снимка нет (сессия открыта до
-# обновления, SessionStart не отработал) — по-старому: любая значимая незакоммиченная правка.
+# обновления обвязки, SessionStart не отработал; 8.1.3) — работа = значимое, изменённое после старта
+# процесса этой сессии. Не удалось ни то, ни другое — по-старому: любая значимая незакоммиченная правка.
+NEW_WORK=""
 if [ -n "$START_SNAP" ]; then
   NOW_SNAP=$(python3 System/scripts/session_liveness.py dirty "$PROJECT_DIR" 15 2>/dev/null) && {
     NEW_WORK=$(LC_ALL=C comm -13 <(LC_ALL=C sort "$START_SNAP") <(printf '%s\n' "$NOW_SNAP" | sed '/^$/d' | LC_ALL=C sort))
+    [ -z "$NEW_WORK" ] && exit 0
+  }
+else
+  SINCE=$(python3 System/scripts/session_liveness.py since "$PROJECT_DIR" 15 2>/dev/null) && {
+    NEW_WORK="$SINCE"
     [ -z "$NEW_WORK" ] && exit 0
   }
 fi
 
 mkdir -p .claude
 TIMESTAMP_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Список изменённых файлов — из фактического status (ДО любых git-операций)
-CHANGED_FILES=$(printf '%s\n' "$UNCOMMITTED" | awk '{print $NF}' | head -20 | tr '\n' ',' | sed 's/,$//')
+# Список изменённых файлов (ДО любых git-операций): работа этой сессии, если она известна, иначе всё
+# значимое. Путь — целиком, по строке на файл (8.1.3: awk '{print $NF}' резал пути с пробелами,
+# а склейка через запятую — имена с запятой).
+if [ -n "$NEW_WORK" ]; then
+  CHANGED_FILES=$(printf '%s\n' "$NEW_WORK" | cut -f2 | sed 's/ <- .*//' | head -20)
+else
+  CHANGED_FILES=$(printf '%s\n' "$SIGNIFICANT" | sed -E 's/^.{3}//; s/^.* -> //; s/^"(.*)"$/\1/' | head -20)
+fi
 
 # --- Durable снапшот БЕЗ мутации main ---
 # git stash create кладёт коммит-объект рабочего дерева+индекса в БД объектов git, НЕ трогая
@@ -107,7 +120,7 @@ data = {
     "status": "marker_only+snapshot_ref" if ref else "marker_only",
     "last_commit": os.environ.get("SNAP_COMMIT", ""),
     "snapshot_ref": ref,                       # git stash create хэш; якорь refs/wip-snapshot/<sid>
-    "changed_files": [f for f in os.environ.get("SNAP_FILES", "").split(",") if f],
+    "changed_files": [f for f in os.environ.get("SNAP_FILES", "").split("\n") if f],
     "note": ("Сессия не закрыта через /end. Данные — в рабочем дереве (git status/diff). "
              "Если дерево вычищено — восстановить снапшот: git stash apply <snapshot_ref>. "
              "STARTUP/recovery: восстанови wrap-up по git log+diff и закрой через /end."),

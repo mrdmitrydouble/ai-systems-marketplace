@@ -16,11 +16,12 @@
 #   распознавание сессий (8.1.2): все виды установки claude по точному argv[0], но не помощники, GUI и
 #                       чужие аргументы · вложенный claude — часть сессии, PID 1 — сессия · блокирует только
 #                       работающая сессия, в т.ч. через субагента · подметание не трогает свой маркер ·
-#                       журнал ищется по пути из маркера и в CLAUDE_CONFIG_DIR
+#                       журнал ищется по пути из маркера и в CLAUDE_CONFIG_DIR · папка со скобками [GitHub] (8.1.3)
 #   «не закрыта» только за работу этой сессии (8.1.2, разница снимков старта и конца): давний черновик и
 #                       давнее удаление — не работа; правка, git mv, cp -p, chmod — работа · устаревший
 #                       маркер без снапшота при чистом дереве снимается молча, со снапшотом — нет · при
-#                       незакоммиченной работе — RECOVERY · сжатие не сдвигает старт и не переснимает снимок
+#                       незакоммиченной работе — RECOVERY · сжатие не сдвигает старт и не переснимает снимок ·
+#                       окно без снимка судит по старту процесса · имя с пробелом в маркере целиком (8.1.3)
 #   dead-path детектор (логика quick_health): 2 мёртвых cwd → count=2 + оба id ; disabled не считается
 #
 # Запуск: bash System/scripts/smoke_hooks.sh   (см. также quick_health.sh — детектор dead-path)
@@ -143,6 +144,20 @@ CS=$(HOME="$SBX/nohome" CLAUDE_CONFIG_DIR="$CF" python3 -B -c 'import sys; sys.p
 print(L._state(sys.argv[2], "777")[0], L._state(sys.argv[2], "888")[0])' "$LIVE_MOD" "$CD" 2>&1 | tail -1)
 [ "$CS" = "active active" ] && ok "журнал сессии находится по пути из маркера и в CLAUDE_CONFIG_DIR" \
   || bad "поиск журнала: [$CS], ожидалось [active active]"
+
+# T6) путь проекта со скобками (8.1.3): «7. Venture Lovers [GitHub]» — для glob это шаблон, и маркеры
+#     не находились никогда; страж молча не блокировал. Маркер, работающая сессия и подметание — в такой папке.
+BD="$SBX/proj [GitHub]"; mkdir -p "$BD/.claude/live_sessions"
+printf '%s\n' '{"type":"user","message":{"content":"z"}}' > "$SBX/br.jsonl"
+printf 't\n555\n0\n%s\n' "$SBX/br.jsonl" > "$BD/.claude/live_sessions/sB.marker"
+printf 't\n554\n0\n' > "$BD/.claude/live_sessions/sDead.marker"
+BR=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+d = sys.argv[2]; st = L._state(d, "555")[0]
+L.live_pids = lambda _d: ["555"]; L.self_pid = lambda start=None: "555"; L.sweep(d)
+import os; left = sorted(os.listdir(os.path.join(d, ".claude", "live_sessions")))
+print(st, ",".join(left))' "$LIVE_MOD" "$BD" 2>&1 | tail -1)
+[ "$BR" = "active sB.marker" ] && ok "папка со скобками в имени ([GitHub]): маркер найден, работающая сессия видна, подметание работает" \
+  || bad "папка со скобками: [$BR], ожидалось [active sB.marker] — страж слеп в таких узлах"
 
 echo "=== SMOKE: memory_write_guard ==="
 
@@ -303,7 +318,7 @@ mkdir -p "$WREPO/System/scripts" "$WREPO/.claude/live_sessions"
 cp "$LIVE_MOD/session_liveness.py" "$WREPO/System/scripts/" 2>/dev/null
 ( cd "$WREPO" && git init -q && git config user.email s@s && git config user.name s && git config commit.gpgsign false \
   && printf 'x' > System/scripts/tool.sh && printf '{}' > .claude/settings.json && printf 'base' > notes.md \
-  && printf 'old' > old.txt && git add System .claude/settings.json notes.md old.txt && git commit -q -m base )
+  && printf 'old' > old.txt && git add -A && git commit -q -m base )
 start_hook() { printf '{"session_id":"%s","source":"%s"}' "$1" "${2:-startup}" \
   | CLAUDE_PROJECT_DIR="$WREPO" bash "$HOOKS/session_start_recovery.sh" 2>/dev/null; }
 end_hook() { printf '{"session_id":"%s","reason":"other"}' "$1" \
@@ -368,6 +383,33 @@ start_hook w5 compact >/dev/null
 start_hook w5b compact >/dev/null
 [ ! -f "$WREPO/.claude/live_sessions/w5b.dirty" ] && ok "сжатие без снимка его не создаёт (работа до сжатия не потеряется)" \
   || bad "сжатие создало снимок с середины сессии → работа до сжатия не попадёт в маркер"
+
+# W6) окно без снимка старта (открыто до обновления обвязки, 8.1.3): его работа — значимое, изменённое
+#     после старта его процесса; давний черновик не в счёт (раньше такое окно считало работой всё).
+W6=$(python3 -B -c 'import sys, os, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+d = sys.argv[2]; old = os.path.join(d, "w6_old.md"); new = os.path.join(d, "w6_new.md")
+open(old, "w").write("o"); open(new, "w").write("n"); os.utime(old, (time.time() - 7200, time.time() - 7200))
+L.self_pid = lambda start=None: "4242"; L._proc_start = lambda pid: time.time() - 3600
+got = [l.split("\t")[1] for l in L.work_since_start(d)]
+L.self_pid = lambda start=None: None
+try: L.work_since_start(d); none = "без исключения"
+except Exception: none = "исключение"
+os.remove(old); os.remove(new)
+print(",".join(got), none)' "$LIVE_MOD" "$WREPO" 2>&1 | tail -1)
+[ "$W6" = "w6_new.md исключение" ] && ok "окно без снимка: работа — только изменённое после старта процесса; своей сессии нет — судит по-старому" \
+  || bad "окно без снимка: [$W6], ожидалось [w6_new.md исключение]"
+
+# W7) имя с пробелом и запятой попадает в маркер целиком (8.1.3: awk резал по пробелу, склейка — по запятой)
+rm -f "$WM"; start_hook w7 >/dev/null; printf 'x' > "$WREPO/новый файл, версия 2.md"; end_hook w7
+grep -q '"новый файл, версия 2.md"' "$WM" 2>/dev/null && ok "имя файла с пробелом и запятой попадает в маркер целиком" \
+  || bad "имя файла в маркере искажено: $(grep -A3 changed_files "$WM" 2>/dev/null | tr '\n' ' ')"
+rm -f "$WM" "$WREPO/новый файл, версия 2.md"
+
+# W8) время старта процесса читается и в русской локали (8.1.3: ps печатал «понедельник, 2 ноября…»,
+#     разбор падал, окно без снимка судило по-старому). Настоящий _proc_start, без заглушек.
+W8=$(LANG=ru_RU.UTF-8 LC_ALL=ru_RU.UTF-8 python3 -B -c 'import sys, os, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+print("OK" if abs(L._proc_start(os.getpid()) - time.time()) < 120 else "далеко")' "$LIVE_MOD" 2>&1 | tail -1)
+[ "$W8" = "OK" ] && ok "время старта процесса читается в русской локали" || bad "время старта в русской локали: $W8"
 
 echo "=== SMOKE: dead-path детектор (логика quick_health) ==="
 # Контракт ДОЛЖЕН совпадать с блоком dead-path в quick_health.sh (секция [HARNESS]).
