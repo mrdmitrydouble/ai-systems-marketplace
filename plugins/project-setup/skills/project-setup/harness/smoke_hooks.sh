@@ -8,6 +8,11 @@
 #   memory_write_guard: frozen-блок (exit2) · чистая запись (exit0) · живой соперник→deny+inbox ·
 #                       маркер без процесса→НЕ блокирует (контракт v4) · inbox-путь→exit0
 #   stop_guard: декларация без свежего PROGRESS (exit2) · benign (exit0) · escape hatch (exit0) · свежий PROGRESS (exit0)
+#   установка: System/scripts/session_liveness.py проекта на месте и импортируется (без него страж молча выключен)
+#   ложный RECOVERY (8.1.1): страж не оставляет __pycache__ · снапшот не считает работой кэш Python,
+#                       live-маркер соседней сессии, отметку прогона (System/state/) и сам старый
+#                       маркер · но пишет маркер при настоящей
+#                       незакоммиченной правке (позитивный контроль)
 #   dead-path детектор (логика quick_health): 2 мёртвых cwd → count=2 + оба id ; disabled не считается
 #
 # Запуск: bash System/scripts/smoke_hooks.sh   (см. также quick_health.sh — детектор dead-path)
@@ -31,6 +36,16 @@ run_guard() { # stdin JSON → запускает memory_write_guard, печат
   local out; out=$(printf '%s' "$input" | bash "$HOOKS/memory_write_guard.sh" 2>/dev/null)
   echo "EXIT=$?|$out"
 }
+
+echo "=== SMOKE: установка ==="
+# Проверки стража ниже идут в песочнице со стабами — они не видят, лежит ли модуль живости в САМОМ
+# проекте. А без него страж молча пропускает любую запись (fail-open). Поэтому — отдельная проверка.
+if python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L; sys.exit(0 if callable(getattr(L, "blocking_rivals", None)) else 1)' \
+     "$PROJECT_ROOT/System/scripts" >/dev/null 2>&1; then
+  ok "System/scripts/session_liveness.py на месте и импортируется"
+else
+  bad "нет рабочего System/scripts/session_liveness.py → страж параллельных сессий молча выключен"
+fi
 
 echo "=== SMOKE: memory_write_guard ==="
 
@@ -82,7 +97,7 @@ rm -f "$SBX/.claude/live_sessions/"*.marker
 
 echo "=== SMOKE: stop_guard ==="
 # Подготовка git-песочницы (work signal = untracked файл) + transcript
-( cd "$SBX" && git init -q && git config user.email s@s && git config user.name s )
+( cd "$SBX" && git init -q && git config user.email s@s && git config user.name s && git config commit.gpgsign false )
 printf 'work' > "$SBX/uncommitted.txt"   # untracked → git status непустой → WORK_SIGNAL=1
 TR="$SBX/transcript.jsonl"
 
@@ -118,6 +133,70 @@ touch -t 202601010000 "$SBX/System/memory/PROGRESS.md"
 printf '{"transcript_path":"%s","stop_hook_active":true}' "$TR" | bash "$HOOKS/stop_guard.sh" >/dev/null 2>&1
 [ $? -eq 0 ] && ok "stop_hook_active=true → exit 0 (анти-рекурсия)" || bad "рекурсия: ожидался exit 0"
 
+echo "=== SMOKE: ложный RECOVERY (кэш и служебные файлы ≠ работа сессии) ==="
+# Класс бага (8.1.1): страж импортировал session_liveness → Python клал System/scripts/__pycache__/ →
+# дерево навсегда «грязное» → каждый прогон без /end (scheduled!) писал маркер «сессия не закрыта».
+# R1) страж импортирует модуль живости и НЕ оставляет байткод. env -u: проверка честная и там,
+#     где PYTHONDONTWRITEBYTECODE уже выставлен (иначе тест прошёл бы вхолостую).
+rm -rf "$STUB_DIR/__pycache__" "$STUB_DIR/imported.flag"
+cat > "$STUB_DIR/session_liveness.py" <<'STUB'
+import os
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "imported.flag"), "w").close()
+def blocking_rivals(d):  return []
+def describe(d, pids=None):  return ""
+STUB
+printf '{"tool_input":{"file_path":"%s/System/memory/PROGRESS.md"},"session_id":"sA"}' "$SBX" \
+  | env -u PYTHONDONTWRITEBYTECODE bash "$HOOKS/memory_write_guard.sh" >/dev/null 2>&1
+if [ ! -f "$STUB_DIR/imported.flag" ]; then
+  bad "страж не импортировал модуль живости — проверка байткода невалидна"
+elif [ -d "$STUB_DIR/__pycache__" ]; then
+  bad "страж оставил $STUB_DIR/__pycache__ → вечный ложный RECOVERY"
+else
+  ok "страж импортирует модуль живости без __pycache__"
+fi
+rm -rf "$STUB_DIR/session_liveness.py" "$STUB_DIR/imported.flag" "$STUB_DIR/__pycache__"
+
+# R2) снапшот: «грязь» = только кэш Python → маркер НЕ пишется.
+#     System/scripts/ и .claude/ отслеживаются git (как в живом проекте) — иначе status свернул бы
+#     всё в «?? System/» или «?? .claude/», и проверка мерила бы не то.
+RREPO="$SBX/recovery_repo"
+MARKER="$RREPO/.claude/.session_incomplete.json"
+mkdir -p "$RREPO/System/scripts/__pycache__" "$RREPO/.claude"
+( cd "$RREPO" && git init -q && git config user.email s@s && git config user.name s && git config commit.gpgsign false \
+  && printf 'x' > System/scripts/tool.sh && printf '{}' > .claude/settings.json && printf 'base' > notes.md \
+  && git add -A && git commit -q -m base )
+printf 'pyc' > "$RREPO/System/scripts/__pycache__/session_liveness.cpython-314.pyc"
+printf '{"session_id":"sched1","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
+[ ! -f "$MARKER" ] && ok "грязь = только __pycache__ → маркер НЕ пишется" \
+  || bad "ложный маркер «сессия не закрыта» из-за __pycache__"
+
+# R3) live-маркер соседней живой сессии (scheduled-прогон кончился, пока открыта сессия владельца) → не работа
+rm -f "$MARKER"
+mkdir -p "$RREPO/.claude/live_sessions" && printf 'now' > "$RREPO/.claude/live_sessions/OTHER.marker"
+printf '{"session_id":"sched2","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
+[ ! -f "$MARKER" ] && ok "live-маркер соседней сессии → маркер НЕ пишется" \
+  || bad "ложный маркер из-за .claude/live_sessions/ соседней сессии"
+
+# R3б) отметка прогона stamp_run (System/state/ — локальный факт машины) без .gitignore → не работа
+rm -f "$MARKER"
+mkdir -p "$RREPO/System/state/runs" && printf '2026-11-02 10:00' > "$RREPO/System/state/runs/digest.txt"
+printf '{"session_id":"sched4","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
+[ ! -f "$MARKER" ] && ok "отметка прогона в System/state/ → маркер НЕ пишется" \
+  || bad "ложный маркер из-за отметки прогона в System/state/"
+
+# R4) старый маркер не считает работой сам себя — иначе он вечен: каждый прогон без /end его переписывает
+printf '{"stale":true}' > "$MARKER"
+printf '{"session_id":"sched3","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
+grep -q '"stale"' "$MARKER" 2>/dev/null && ok "старый маркер сам себя не переписывает" \
+  || bad "маркер переписал сам себя → ложный RECOVERY продлевается каждым прогоном"
+
+# R5) позитивный контроль: настоящая незакоммиченная правка → маркер ПИШЕТСЯ и называет файл
+#     (фильтры R2–R4 не глушат работу; старый маркер из R4 заменён свежим)
+printf ' changed' >> "$RREPO/notes.md"
+printf '{"session_id":"live1","reason":"other"}' | CLAUDE_PROJECT_DIR="$RREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1
+grep -q 'notes.md' "$MARKER" 2>/dev/null && ok "настоящая правка → маркер пишется (фильтр не глушит работу)" \
+  || bad "маркер НЕ записан при реальной незакоммиченной правке"
+
 echo "=== SMOKE: dead-path детектор (логика quick_health) ==="
 # Контракт ДОЛЖЕН совпадать с блоком dead-path в quick_health.sh (секция [HARNESS]).
 DEADJSON="$SBX/sched.json"
@@ -152,7 +231,7 @@ echo "$IDS" | grep -q 'task-C-disabled' && bad "disabled-задача попал
 echo "=== SMOKE: детектор пульса (анти-ложный-якорь + окно свежести) ==="
 # Контракт ДОЛЖЕН совпадать с check_pulse_freshness.sh: якорный grep ^шаблон + окно MAX_AGE=9.
 PREPO="$SBX/pulse_repo"
-mkdir -p "$PREPO" && ( cd "$PREPO" && git init -q && git config user.email s@s && git config user.name s )
+mkdir -p "$PREPO" && ( cd "$PREPO" && git init -q && git config user.email s@s && git config user.name s && git config commit.gpgsign false )
 # ловушка ложного срабатывания: heartbeat-жалоба, упоминающая фразу В СЕРЕДИНЕ сообщения
 ( cd "$PREPO" && echo a > a && git add -A && git commit -q -m "heartbeat (вт): watchdog — weekly digest пн не вышел" )
 TRAP=$(git -C "$PREPO" log --grep="^weekly digest" --oneline 2>/dev/null | wc -l | tr -d ' ')

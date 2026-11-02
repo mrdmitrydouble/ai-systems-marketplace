@@ -4,6 +4,8 @@
 # v4 29.06 (правка Димы): живость по ПРОЦЕССУ, не по таймеру. Маркер моложе 2ч больше НЕ значит «жив»
 #   (долгий запрос/мобильный простой ломали таймер). Теперь соперник = живой claude-процесс этой папки.
 #   Логику живости держит System/scripts/session_liveness.py (один источник истины, переиспользуют /end и старт).
+# v4.1 02.11 (спора 8.1.1): импорт без байткода — иначе Python кладёт System/scripts/__pycache__/,
+#   дерево навсегда «грязное», и каждый прогон без /end (scheduled!) оставляет ложный RECOVERY-маркер.
 # 1) Frozen zones: блок записи в Project/Sources, System/archive, _backup, Project/Archive.
 # 2) Коллизия сессий: запись в System/memory/ или CLAUDE.md при ЖИВОМ не-scheduled сопернике → инбокс.
 
@@ -46,6 +48,7 @@ if not is_memory or not sid:
     sys.exit(0)
 
 # Живость по ПРОЦЕССУ: блокирующие соперники = живые claude-сессии этой папки, КРОМЕ scheduled и меня.
+sys.dont_write_bytecode = True   # не мусорить __pycache__ в System/scripts/ (см. v4.1 в шапке)
 sys.path.insert(0, os.path.join(proj, "System", "scripts"))
 try:
     import session_liveness as L

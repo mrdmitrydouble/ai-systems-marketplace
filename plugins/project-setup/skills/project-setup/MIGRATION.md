@@ -173,6 +173,20 @@ Frozen-файлы НЕ ИЗМЕНИЛИСЬ? Сравнить размеры с 
 
 ## МИГРАЦИЯ С ПРЕДЫДУЩИХ ВЕРСИЙ
 
+### harness v5 → v5.1 (skill 8.1.1, Repair — структура не меняется)
+
+Чинит ложное «прошлая сессия не закрыта» после scheduled-прогонов. Причины: страж импортировал
+`session_liveness.py`, и Python клал рядом `System/scripts/__pycache__/`; снапшот считал работой и
+live-маркеры соседних сессий, и сам старый маркер. Дерево оставалось «грязным», SessionEnd-хук принимал
+это за брошенную работу. `/plugin update` скопированные в проект хуки НЕ обновляет — только этот шаг.
+Проект на harness v4 (спора 8.0.x) — сначала поставь v5 целиком по `harness/README.md`: трёх файлов мало.
+1. **Заменить 3 файла:** `memory_write_guard.sh`, `session_end_snapshot.sh` → `.claude/hooks/`; `smoke_hooks.sh` → `System/scripts/`.
+2. **Гигиена:** `rm -rf System/scripts/__pycache__`; добавить в `.gitignore` `__pycache__/`, `System/state/`,
+   `.claude/live_sessions/`, `.claude/.session_incomplete.json`, `.claude/.session_closed.flag`. Висящий
+   `.claude/.session_incomplete.json`, у которого в `changed_files` нет ничего, кроме `__pycache__`, `System/state/`,
+   `.claude/live_sessions/` и самого маркера, — ложный: удалить.
+3. **Оракул:** `bash System/scripts/smoke_hooks.sh` → «SMOKE: ЗЕЛЁНЫЙ», 24 из 24.
+
 ### harness v3 → v4 (внутри skill v8 — без смены версии скилла)
 
 Живость сессий по ПРОЦЕССУ вместо таймера 2ч. Чинит ложные «рядом открыта сессия» на долгих/мобильных сессиях + гарантирует слияние инбоксов. Структура не меняется — только harness-файлы:

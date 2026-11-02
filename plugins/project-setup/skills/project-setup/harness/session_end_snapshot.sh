@@ -49,9 +49,15 @@ git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 # Чистое дерево → сессия ничего не меняла → не пишем маркер (фикс цикла marker-only WIP)
 UNCOMMITTED=$(git status --porcelain 2>/dev/null)
 [ -z "$UNCOMMITTED" ] && exit 0
-# Чистая телеметрия (as-metrics.jsonl) — не «работа»: не плодим incomplete-маркер/снапшот.
-# Это убирает накопление осиротевших wip-снапшотов от scheduled-прогонов (v4, 29.06).
-SIGNIFICANT=$(printf '%s\n' "$UNCOMMITTED" | grep -v 'as-metrics\.jsonl' | sed '/^[[:space:]]*$/d')
+# Не «работа» — не плодим incomplete-маркер/снапшот:
+#   телеметрия as-metrics.jsonl (v4, 29.06: осиротевшие wip-снапшоты от scheduled-прогонов);
+#   кэш Python __pycache__/ и *.pyc (v4.1, 02.11: ложный RECOVERY после КАЖДОГО scheduled-прогона);
+#   служебные файлы самого harness (v4.1): live-маркер соседней живой сессии, отметки прогонов
+#   stamp_run (System/state/) и сам маркер незавершённости — иначе однажды записанный маркер
+#   переписывает себя каждым прогоном без /end.
+SIGNIFICANT=$(printf '%s\n' "$UNCOMMITTED" | grep -v 'as-metrics\.jsonl' \
+  | grep -v -E '__pycache__/|\.pyc"?$|System/state/|\.claude/(live_sessions/|\.session_incomplete\.json|\.session_closed\.flag|\.sess_marker_)' \
+  | sed '/^[[:space:]]*$/d')
 [ -z "$SIGNIFICANT" ] && exit 0
 
 mkdir -p .claude
