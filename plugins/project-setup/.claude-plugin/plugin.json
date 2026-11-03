@@ -1,8 +1,8 @@
 {
   "name": "project-setup",
   "displayName": "AI Project Intelligence — project-setup",
-  "version": "8.1.3",
-  "description": "Инициализация и миграция системы управления проектом (память, правила, harness v5.2.1, подагенты, CONSCIOUSNESS, автоматизация). Мета-проект и подопечные. Claude Code и Cowork. Ризоматическая спора v8 — латинские (ASCII) имена папок и файлов структуры.",
+  "version": "8.1.4",
+  "description": "Инициализация и миграция системы управления проектом (память, правила, harness v5.2.2, подагенты, CONSCIOUSNESS, автоматизация). Мета-проект и подопечные. Claude Code и Cowork. Ризоматическая спора v8 — латинские (ASCII) имена папок и файлов структуры.",
   "author": {
     "name": "Dmitry Rubin",
     "email": "mr.dmitry.double@gmail.com"

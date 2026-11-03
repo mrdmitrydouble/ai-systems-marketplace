@@ -22,6 +22,7 @@
 #                       маркер без снапшота при чистом дереве снимается молча, со снапшотом — нет · при
 #                       незакоммиченной работе — RECOVERY · сжатие не сдвигает старт и не переснимает снимок ·
 #                       окно без снимка судит по старту процесса · имя с пробелом в маркере целиком (8.1.3)
+#   проверка закрытия (8.1.4): итог в инбоксе засчитывается, только когда рядом работает сессия
 #   dead-path детектор (логика quick_health): 2 мёртвых cwd → count=2 + оба id ; disabled не считается
 #
 # Запуск: bash System/scripts/smoke_hooks.sh   (см. также quick_health.sh — детектор dead-path)
@@ -410,6 +411,24 @@ rm -f "$WM" "$WREPO/новый файл, версия 2.md"
 W8=$(LANG=ru_RU.UTF-8 LC_ALL=ru_RU.UTF-8 python3 -B -c 'import sys, os, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
 print("OK" if abs(L._proc_start(os.getpid()) - time.time()) < 120 else "далеко")' "$LIVE_MOD" 2>&1 | tail -1)
 [ "$W8" = "OK" ] && ok "время старта процесса читается в русской локали" || bad "время старта в русской локали: $W8"
+
+echo "=== SMOKE: проверка закрытия — итог в инбоксе засчитывается (8.1.4) ==="
+# Класс бага: при законном закрытии в инбокс (рядом РАБОТАЕТ другая сессия) Блок 1 close_session_check
+# давал три ложных FAIL — PROGRESS/SYSTEM_LOG/HANDOFF «не обновлялись», хотя итог лежит в инбоксе.
+CREPO="$SBX/close_repo"; CMEM="$CREPO/System/memory"
+mkdir -p "$CMEM/inbox_sessions" "$CREPO/System/scripts"
+for f in PROGRESS SYSTEM_LOG HANDOFF; do printf '# %s\n' "$f" > "$CMEM/$f.md"; touch -t 202601010000 "$CMEM/$f.md"; done
+block1_fails() { CLAUDE_PROJECT_DIR="$CREPO" bash "$PROJECT_ROOT/System/scripts/close_session_check.sh" 2>/dev/null \
+  | awk '/^Блок 1/{p=1;next} /^Блок 2/{p=0} p' | grep -c '❌' | tr -d ' '; }
+rival_stub() { printf 'import sys\nif sys.argv[1:2] == ["blocking"]: print("%s")\n' "$1" > "$CREPO/System/scripts/session_liveness.py"; }
+printf 'итог' > "$CMEM/inbox_sessions/2026-01-01_close.md"
+rival_stub 99999; C1=$(block1_fails)
+rival_stub "";    C2=$(block1_fails)
+touch -t 202601010000 "$CMEM/inbox_sessions/2026-01-01_close.md"; rival_stub 99999; C3=$(block1_fails)
+[ "$C1" = "0" ] && ok "рядом работает сессия + свежий инбокс → Блок 1 без FAIL (итог в инбоксе)" \
+  || bad "закрытие в инбокс: Блок 1 даёт $C1 FAIL"
+{ [ "$C2" = "3" ] && [ "$C3" = "3" ]; } && ok "без работающей рядом сессии или без свежего инбокса Блок 1 по-прежнему требует память" \
+  || bad "Блок 1 ослаб: без соперника FAIL=$C2, без свежего инбокса FAIL=$C3 (ожидалось 3 и 3)"
 
 echo "=== SMOKE: dead-path детектор (логика quick_health) ==="
 # Контракт ДОЛЖЕН совпадать с блоком dead-path в quick_health.sh (секция [HARNESS]).

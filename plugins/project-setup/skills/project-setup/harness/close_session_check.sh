@@ -29,7 +29,9 @@ _check_mtime_updated() {
     return
   fi
   local mtime=$(_mtime "$file")
-  if [ "$mtime" -lt "$THRESHOLD" ]; then
+  if [ "$mtime" -lt "$THRESHOLD" ] && [ "$INBOX_CLOSE" = "1" ]; then
+    echo "✅ $label: итог в инбоксе $(basename "$FRESH_INBOX") — рядом работает другая сессия (Шаг 3 /end)"
+  elif [ "$mtime" -lt "$THRESHOLD" ]; then
     local hours=$(( (NOW - mtime) / 3600 ))
     echo "❌ $label: не обновлялся в этой сессии (последнее изменение $hours ч назад, окно $((WINDOW_MINUTES/60)) ч)"
     FAILS=$((FAILS+1))
@@ -53,6 +55,17 @@ _pick() {  # $1 = базовое имя; печатает путь к файлу
   ls -t "$MEMORY_DIR/${base}"*.md 2>/dev/null | head -1
 }
 PROGRESS_F=$(_pick PROGRESS); SYSLOG_F=$(_pick SYSTEM_LOG); HANDOFF_F=$(_pick HANDOFF)
+# Закрытие в инбокс (8.1.4): пока рядом РАБОТАЕТ другая сессия, страж уводит записи в общие файлы памяти
+# в inbox_sessions/ — свежий инбокс (в окне сессии) и есть обновление памяти, а не блокер (Шаг 3 /end).
+# Раньше Блок 1 давал три ложных FAIL, и агент «чинил» несуществующую проблему.
+FRESH_INBOX=""; INBOX_CLOSE=0
+for f in "$MEMORY_DIR"/inbox_sessions/*.md; do
+  [ -f "$f" ] && [ "$(_mtime "$f")" -ge "$THRESHOLD" ] && { FRESH_INBOX="$f"; break; }
+done
+if [ -n "$FRESH_INBOX" ]; then
+  BLOCKING_NOW=$(python3 System/scripts/session_liveness.py blocking "$PROJECT_DIR" 2>/dev/null | grep -c . | tr -d ' ')
+  [ "${BLOCKING_NOW:-0}" -gt "0" ] && INBOX_CLOSE=1
+fi
 echo "Блок 1 — Файлы памяти (Правило 9):"
 _check_mtime_updated "${PROGRESS_F:-$MEMORY_DIR/PROGRESS.md}"   "PROGRESS  "
 _check_mtime_updated "${SYSLOG_F:-$MEMORY_DIR/SYSTEM_LOG.md}"   "SYSTEM_LOG"
