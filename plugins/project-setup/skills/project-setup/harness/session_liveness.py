@@ -6,6 +6,17 @@
 #   строка3=эпоха старта, строка4=путь к журналу сессии. Рядом <sid>.dirty — снимок незакоммиченного
 #   на старте: по разнице снимков старта и конца SessionEnd видит работу ЭТОЙ сессии.
 #
+# v5.2.3 (06.11, спора 8.1.5; найдено живой работой VL после раскатки):
+#   - Сессию, закрытую через /end и сутки простоявшую, отправили в архив — SessionEnd приписал ей
+#     незакоммиченную работу СОСЕДНИХ сессий, и «не закрыта» двое суток видели все новые сессии.
+#     Теперь правки, сделанные позже последнего действия простаивающей сессии, — не её работа (own).
+#   - Последнее действие — по меткам времени записей журнала, не по дате файла: приложение дописывает
+#     в журнал служебные строки без метки (название, стоимость) и при архивации, и при открытии окна.
+#   - Соперник назван так, как в боковой панели приложения (custom-title), а не первой строкой
+#     переписки — там бывает служебное «<system-reminder>…».
+#   - Журналы субагентов — на любой глубине (агенты воркфлоу пишут в subagents/workflows/wf-*/); висящий
+#     вызов инструмента = сессия работала до конца. Найдено двумя независимыми сверками правки.
+#
 # v5.2.1 (02.11, спора 8.1.3): путь проекта в glob экранируется (glob.escape). Папка вида
 #   «7. Venture Lovers [GitHub]» — для glob это шаблон «один из символов», маркеры не находились никогда:
 #   страж считал все сессии «без маркера» и не блокировал (fail-open). Найдено живой проверкой раскатки.
@@ -34,6 +45,8 @@
 #   sweep <dir>     → удалить маркеры мёртвых процессов (печатает что снято)
 #   dirty <dir> [сек] → снимок значимого незакоммиченного (для SessionStart/SessionEnd; сек — потолок)
 #   since <dir> [сек] → значимое незакоммиченное, изменённое после старта моей сессии (SessionEnd без снимка)
+#   own <журнал>    → stdin: строки снимка; stdout: без правок, сделанных после последнего действия
+#                     простаивающей сессии (SessionEnd: работа соседей — не её работа)
 #   report <dir>    → всё вместе (диагностика)
 
 import sys, os, re, glob, subprocess, time
@@ -179,10 +192,43 @@ def _transcript(sid, lines=()):
             return hits[0]
     return None
 
+def _tail(path, size=262144):
+    """Последние строки журнала (до size байт) — журнал долгой сессии весит десятки мегабайт."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        n = f.tell()
+        f.seek(max(0, n - size))
+        lines = f.read().decode("utf-8", "ignore").split("\n")   # не splitlines: U+2028 в тексте не разделитель JSONL
+    return lines[1:] if n > size else lines
+
+def _title(path):
+    """Название сессии, как в боковой панели приложения: <sid>/custom-title.json или последняя запись
+       custom-title в журнале (окно могли переименовать); у старого CLI — запись summary."""
+    import json
+    try:
+        with open(os.path.join(path[:-len(".jsonl")], "custom-title.json"), encoding="utf-8") as f:
+            t = json.load(f).get("customTitle")
+        if t:
+            return t
+    except Exception:
+        pass
+    try:
+        for line in reversed(_tail(path)):
+            if '"custom-title"' in line or '"summary"' in line:
+                r = json.loads(line)
+                t = r.get("customTitle") if r.get("type") == "custom-title" else (
+                    r.get("summary") if r.get("type") == "summary" else None)
+                if t:
+                    return t
+    except Exception:
+        pass
+    return None
+
 def _transcript_label(path):
     if not path:
         return None
     import json
+    first = None
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             for i, line in enumerate(f):
@@ -193,31 +239,66 @@ def _transcript_label(path):
                 except Exception:
                     continue
                 if r.get("type") == "summary" and r.get("summary"):
-                    return r["summary"][:60]
+                    first = r["summary"]
+                    break
                 if r.get("type") == "user":
                     c = r.get("message", {}).get("content", "")
                     t = c if isinstance(c, str) else next(
                         (x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text"), "")
-                    t = t.strip()
-                    if not t:
-                        continue
-                    sm = re.match(r'<scheduled-task name="([^"]+)"', t)
+                    sm = re.match(r'\s*<scheduled-task name="([^"]+)"', t)
                     if sm:
                         return f'задача по расписанию «{sm.group(1)}»'
-                    return f'«{t[:55]}…»' if len(t) > 55 else f'«{t}»'
+                    # служебные вставки приложения — не то, чем человек узнаёт окно
+                    t = re.sub(r'<system-reminder>.*?</system-reminder>', ' ', t, flags=re.S)
+                    t = " ".join(re.sub(r'</?pasted_content[^>]*>', ' ', t).split())
+                    if t:
+                        first = t
+                        break
     except Exception:
         pass
+    t = _title(path) or first
+    if not t:
+        return None
+    return f'«{t[:55]}…»' if len(t) > 55 else f'«{t}»'
+
+_STAMP = re.compile(r'"timestamp"\s*:\s*"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)')
+
+def _last_stamp(path):
+    """Метка времени последней записи журнала (UTC, эпоха). Служебные строки приложения (название,
+       стоимость, привязка окна) метки не несут — их дописывает и архивация, и открытие окна."""
+    import json, calendar
+    for line in reversed(_tail(path)):
+        if '"timestamp"' not in line:
+            continue
+        try:
+            ts = json.loads(line).get("timestamp")
+        except Exception:
+            continue
+        m = _STAMP.match(f'"timestamp":"{ts}"') if isinstance(ts, str) else None
+        if m:
+            return calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
     return None
 
-def _last_activity(path):
-    """Время последней записи сессии: её журнал и журналы её субагентов (<sid>/subagents/*.jsonl) —
-       пока субагент работает, основной журнал может молчать десятки минут."""
+def _last_activity(path, exact=False):
+    """Время последней записи сессии: её журнал и журналы её субагентов на любой глубине
+       (<sid>/subagents/*.jsonl, у агентов воркфлоу — subagents/workflows/wf-*/agent-*.jsonl): пока они
+       работают, основной журнал может молчать часами. Файл, тронутый недавно (exact — любой), уточняется
+       по меткам записей: свежая дата бывает и от служебной строки без действия сессии."""
     times = []
-    for p in [path] + glob.glob(os.path.join(glob.escape(path[:-len(".jsonl")]), "subagents", "*.jsonl")):
+    subs = glob.glob(os.path.join(glob.escape(path[:-len(".jsonl")]), "subagents", "**", "*.jsonl"), recursive=True)
+    for p in [path] + subs:
         try:
-            times.append(os.path.getmtime(p))
+            mt = os.path.getmtime(p)
         except OSError:
-            pass
+            continue
+        if exact or time.time() - mt < ACTIVE_MIN * 60:
+            try:
+                st = _last_stamp(p)
+            except Exception:
+                st = None
+            if st is not None:
+                mt = min(mt, st)
+        times.append(mt)
     return max(times) if times else None
 
 def _state(d, pid):
@@ -364,6 +445,44 @@ def work_since_start(d, timeout=None, slack=60):
             out.append(line)
     return out
 
+def _tool_pending(path):
+    """Висит ли в конце журнала вызов инструмента без ответа (долгий MCP, ожидание задачи): сессия тогда
+       не простаивала, а ждала — её действие могло писать файлы и после последней записи журнала."""
+    import json
+    pending = set()
+    try:
+        for line in _tail(path):
+            if '"tool_use"' not in line and '"tool_result"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("type") not in ("assistant", "user"):   # api-request-blob повторяет tool_use уже после ответа
+                continue
+            c = r.get("message", {}).get("content") if isinstance(r.get("message"), dict) else None
+            for x in c if isinstance(c, list) else []:
+                if isinstance(x, dict) and x.get("type") == "tool_use":
+                    pending.add(x.get("id"))
+                elif isinstance(x, dict) and x.get("type") == "tool_result":
+                    pending.discard(x.get("tool_use_id"))
+    except Exception:
+        return True
+    return bool(pending)
+
+def own_work(lines, transcript, slack=120):
+    """Из работы, найденной в конце сессии, — только её собственная. Сессия простаивала (последнее
+       действие раньше ACTIVE_MIN мин) — правки позже её последнего действия сделали соседи: так сессия,
+       закрытая через /end и через сутки отправленная в архив, получала «не закрыта» за чужую работу
+       (VL, 04.11). Работала до конца, ждала ответа инструмента или журнал не найден — всё её, как
+       раньше: прерванный посреди действия процесс оставляет правки новее последней записи журнала.
+       Удаления (без даты) — её."""
+    last = _last_activity(transcript, exact=True) if transcript and os.path.isfile(transcript) else None
+    if last is None or time.time() - last < ACTIVE_MIN * 60 or _tool_pending(transcript):
+        return lines
+    edge = (last + slack) * 1e9
+    return [l for l in lines if not (l.rsplit("\t", 1)[-1].isdigit() and int(l.rsplit("\t", 1)[-1]) > edge)]
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
     d = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
@@ -387,6 +506,9 @@ def main():
     elif cmd == "dirty":
         limit = float(sys.argv[3]) if len(sys.argv) > 3 else None
         for line in dirty_entries(d, limit):
+            print(line)
+    elif cmd == "own":
+        for line in own_work([l for l in sys.stdin.read().splitlines() if l], d):
             print(line)
     else:
         print(f"Проект: {d}")

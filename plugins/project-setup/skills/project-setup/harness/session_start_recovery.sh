@@ -78,7 +78,28 @@ fi
 # Несмёрженные инбоксы параллельных сессий (Пакет C: гарантия слияния, не «надежда на промпт»)
 INBOX_CNT=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
 INBOX_LIST=$(find "System/memory/inbox_sessions" -maxdepth 1 -name "*.md" -exec basename {} \; 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+# v4.3 (8.1.5): сжатие контекста и возобновление — продолжение сессии, не новая. Повтор уже виденного —
+# шум (в VL долгие окна получали «прошлая сессия не закрыта» после каждого сжатия). Инбоксы такая сессия
+# сольёт на /end (шаг 0б) — о них молчим. О маркере молчим, только если он уже не новость: при сжатии —
+# маркер старше старта сессии (его показали на старте); при возобновлении — маркер этой же сессии (её
+# процесс перезапустили). Чужой маркер, появившийся позже, — показываем: иначе /end удалил бы его неразобранным.
+case "${SOURCE:-}" in compact|resume) Q_INBOX=1 ;; *) Q_INBOX="" ;; esac
+Q_REC="$Q_INBOX"
+if [ -n "$Q_REC" ] && [ -f "$MARKER" ]; then
+  M_META=$(python3 -c "import json,os,sys
+try: sid = json.load(open(sys.argv[1], encoding='utf-8')).get('session_id', '')
+except Exception: sid = ''
+print(sid or '-'); print(int(os.path.getmtime(sys.argv[1])))" "$MARKER" 2>/dev/null)
+  M_SID=$(printf '%s\n' "$M_META" | sed -n 1p); M_TIME=$(printf '%s\n' "$M_META" | sed -n 2p | tr -cd '0-9')
+  if [ "$SOURCE" = resume ]; then
+    { [ "$M_SID" != "-" ] && [ "$M_SID" = "${SID:-}" ]; } || Q_REC=""
+  else
+    # старт сессии известен из её live-маркера (строка 3) — иначе «уже видела» не доказано, показываем
+    { [ -n "${OLD_EPOCH:-}" ] && [ -n "$M_TIME" ] && [ "$M_TIME" -le "$START_EPOCH" ]; } || Q_REC=""
+  fi
+fi
 # Нечего сообщать — выходим молча
+[ -n "$Q_INBOX" ] && [ -n "$Q_REC" ] && [ -z "$LOCK_MSG" ] && exit 0
 [ ! -f "$MARKER" ] && [ -z "$LOCK_MSG" ] && [ "${INBOX_CNT:-0}" -eq "0" ] && exit 0
 
 # Дополнительный контекст — последние коммиты (только для чтения в Python через env)
@@ -86,7 +107,7 @@ RECENT_COMMITS=$(git log --oneline -5 2>/dev/null | tr '\n' '|')
 
 # Закавыченный heredoc: никакой подстановки шелла в Python-код (аудит 10.06 п.9).
 # Маркер Python читает сам из файла, остальное — через env.
-export RC_LOCK_MSG="$LOCK_MSG" RC_COMMITS="$RECENT_COMMITS" RC_INBOX_CNT="$INBOX_CNT" RC_INBOX_LIST="$INBOX_LIST"
+export RC_LOCK_MSG="$LOCK_MSG" RC_COMMITS="$RECENT_COMMITS" RC_INBOX_CNT="$INBOX_CNT" RC_INBOX_LIST="$INBOX_LIST" RC_Q_REC="$Q_REC" RC_Q_INBOX="$Q_INBOX"
 python3 <<'PYEOF'
 import json, os
 
@@ -96,7 +117,7 @@ if lock_msg:
     parts.append(lock_msg)
 
 mpath = ".claude/.session_incomplete.json"
-if os.path.exists(mpath):
+if os.path.exists(mpath) and not os.environ.get("RC_Q_REC"):
     try:
         with open(mpath, encoding="utf-8") as f:
             marker = json.load(f)
@@ -117,7 +138,7 @@ if os.path.exists(mpath):
     )
 
 inbox_cnt = os.environ.get("RC_INBOX_CNT", "0")
-if inbox_cnt and inbox_cnt != "0":
+if inbox_cnt and inbox_cnt != "0" and not os.environ.get("RC_Q_INBOX"):
     inbox_list = os.environ.get("RC_INBOX_LIST", "")
     parts.append(
         f"📥 СЛЕЙ ИНБОКСЫ ПЕРЕД РАБОТОЙ: в System/memory/inbox_sessions/ есть {inbox_cnt} несмёрженных "

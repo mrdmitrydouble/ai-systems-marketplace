@@ -22,6 +22,9 @@
 #                       маркер без снапшота при чистом дереве снимается молча, со снапшотом — нет · при
 #                       незакоммиченной работе — RECOVERY · сжатие не сдвигает старт и не переснимает снимок ·
 #                       окно без снимка судит по старту процесса · имя с пробелом в маркере целиком (8.1.3)
+#   соседи и повторы (8.1.5): простаивающей сессии не приписана работа соседей · простой — по меткам
+#                       записей журнала · соперник назван как в боковой панели · сжатие и возобновление
+#                       не повторяют уже виденное · окна, закрытые подряд, не теряют маркер друг друга
 #   проверка закрытия (8.1.4): итог в инбоксе засчитывается, только когда рядом работает сессия
 #   dead-path детектор (логика quick_health): 2 мёртвых cwd → count=2 + оба id ; disabled не считается
 #
@@ -159,6 +162,37 @@ import os; left = sorted(os.listdir(os.path.join(d, ".claude", "live_sessions"))
 print(st, ",".join(left))' "$LIVE_MOD" "$BD" 2>&1 | tail -1)
 [ "$BR" = "active sB.marker" ] && ok "папка со скобками в имени ([GitHub]): маркер найден, работающая сессия видна, подметание работает" \
   || bad "папка со скобками: [$BR], ожидалось [active sB.marker] — страж слеп в таких узлах"
+
+# T7) соперник назван так, как в боковой панели приложения (8.1.5): название окна (custom-title.json или
+#     последняя запись custom-title), иначе первая строка без служебных вставок <system-reminder> и
+#     <pasted_content>. Задача по расписанию узнаётся по первому сообщению, даже если у окна есть название.
+TL="$SBX/titles"; mkdir -p "$TL/s3"
+printf '%s\n' '{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>\nLinked sessions now\n</system-reminder>\n<pasted_content id=\"a1\">Сверить заявку</pasted_content>"}]}}' > "$TL/s1.jsonl"
+cp "$TL/s1.jsonl" "$TL/s2.jsonl"
+printf '%s\n' '{"type":"custom-title","customTitle":"Старое имя"}' '{"type":"custom-title","customTitle":"Заявка Сколково"}' >> "$TL/s2.jsonl"
+cp "$TL/s1.jsonl" "$TL/s3.jsonl"; printf '{"customTitle":"Из файла"}' > "$TL/s3/custom-title.json"
+printf '%s\n' '{"type":"user","message":{"content":"<scheduled-task name=\"digest\">прогон</scheduled-task>"}}' \
+  '{"type":"custom-title","customTitle":"Digest"}' > "$TL/s4.jsonl"
+LB=$(python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+print("|".join(L._transcript_label(sys.argv[2] + "/s%d.jsonl" % i) or "-" for i in (1, 2, 3, 4)))' "$LIVE_MOD" "$TL" 2>&1 | tail -1)
+[ "$LB" = "«Сверить заявку»|«Заявка Сколково»|«Из файла»|задача по расписанию «digest»" ] \
+  && ok "соперник назван как в боковой панели; без названия — первой строкой без служебных вставок" \
+  || bad "названия сессий: [$LB]"
+
+# T8) последнее действие сессии — по меткам времени записей журнала, не по дате файла (8.1.5): приложение
+#     дописывает служебные строки без метки (стоимость, название) при архивации и при открытии окна.
+#     Журналы агентов воркфлоу лежат глубже (subagents/workflows/wf-*/) — пока они пишут, сессия работает.
+TS="$SBX/stamps"; mkdir -p "$TS"
+stamp() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - float(sys.argv[1]))))' "$1"; }
+printf '{"type":"user","timestamp":"%s","message":{"content":"x"}}\n{"type":"cost-state"}\n' "$(stamp 7200)" > "$TS/old.jsonl"
+printf '{"type":"user","timestamp":"%s","message":{"content":"x"}}\n' "$(stamp 30)" > "$TS/new.jsonl"
+cp "$TS/old.jsonl" "$TS/wf.jsonl"; mkdir -p "$TS/wf/subagents/workflows/wf-1"
+printf '{"type":"assistant","timestamp":"%s"}\n' "$(stamp 30)" > "$TS/wf/subagents/workflows/wf-1/agent-a.jsonl"
+LA=$(python3 -B -c 'import sys, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
+print(" ".join("active" if time.time() - L._last_activity(sys.argv[2] + "/%s.jsonl" % n) < L.ACTIVE_MIN * 60 else "idle"
+               for n in ("old", "new", "wf")))' "$LIVE_MOD" "$TS" 2>&1 | tail -1)
+[ "$LA" = "idle active active" ] && ok "простой — по меткам записей (служебная строка не будит окно); агент воркфлоу на любой глубине — работа" \
+  || bad "последнее действие сессии: [$LA], ожидалось [idle active active]"
 
 echo "=== SMOKE: memory_write_guard ==="
 
@@ -411,6 +445,68 @@ rm -f "$WM" "$WREPO/новый файл, версия 2.md"
 W8=$(LANG=ru_RU.UTF-8 LC_ALL=ru_RU.UTF-8 python3 -B -c 'import sys, os, time; sys.path.insert(0, sys.argv[1]); import session_liveness as L
 print("OK" if abs(L._proc_start(os.getpid()) - time.time()) < 120 else "далеко")' "$LIVE_MOD" 2>&1 | tail -1)
 [ "$W8" = "OK" ] && ok "время старта процесса читается в русской локали" || bad "время старта в русской локали: $W8"
+
+# W9) работа соседей — не работа простаивающей сессии (8.1.5, VL 04.11: окно, закрытое через /end, через
+#     сутки отправили в архив — SessionEnd приписал ему незакоммиченное соседних сессий). Простаивала —
+#     правки позже её последнего действия чужие; своя давняя правка и работа до самого конца — её;
+#     журнал не найден — по-старому.
+printf '{"type":"user","timestamp":"%s","message":{"content":"x"}}\n{"type":"cost-state"}\n' "$(stamp 7200)" > "$TS/idle.jsonl"
+printf '{"type":"user","timestamp":"%s","message":{"content":"x"}}\n' "$(stamp 300)" > "$TS/busy.jsonl"
+printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp"}]}}\n' "$(stamp 7200)" > "$TS/pend.jsonl"
+end_hook_t() { printf '{"session_id":"%s","reason":"other","transcript_path":"%s"}' "$1" "$2" \
+  | CLAUDE_PROJECT_DIR="$WREPO" bash "$HOOKS/session_end_snapshot.sh" >/dev/null 2>&1; }
+backdate() { python3 -c 'import os, sys, time; t = time.time() - float(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
+# blob: журнал в формате приложения 2.1.309 — ответ инструмента с U+2028 из веб-текста (JSON его не экранирует) и
+# запись api-request-blob, повторяющая tool_use уже после ответа: это НЕ висящий инструмент
+{ printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash"}]}}\n' "$(stamp 7200)"
+  printf '{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"веб\342\200\250текст"}]}}\n' "$(stamp 7200)"
+  printf '{"type":"api-request-blob","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash"}]}}\n'; } > "$TS/blob.jsonl"
+# open: окно открыли за 20 мин до конца (служебная строка без метки освежила дату журнала) — простой всё равно
+# с последнего действия 2 ч назад, и правка соседа час назад — не её
+cp "$TS/idle.jsonl" "$TS/open.jsonl"; backdate "$TS/open.jsonl" 1200
+W9=""
+for c in "idle:now" "idle:old" "busy:now" "none:now" "pend:now" "open:hour" "blob:now"; do
+  rm -f "$WM"; start_hook "w9$c" >/dev/null; printf ' edit' >> "$WREPO/notes.md"
+  [ "${c#*:}" = "old" ] && backdate "$WREPO/notes.md" 10800
+  [ "${c#*:}" = "hour" ] && backdate "$WREPO/notes.md" 3600
+  end_hook_t "w9$c" "$TS/${c%%:*}.jsonl"
+  W9="$W9 $([ -f "$WM" ] && echo marker || echo none)"
+  ( cd "$WREPO" && git checkout -q -- notes.md )
+done
+rm -f "$WM"
+[ "$W9" = " none marker marker marker marker none none" ] \
+  && ok "простаивающей сессии не приписана работа соседей (и в журнале формата приложения); своя давняя правка, работа до конца, висящий инструмент и окно без журнала — маркер" \
+  || bad "работа соседей и своя: [$W9], ожидалось [none marker marker marker marker none none]"
+
+# W10) сжатие и возобновление — продолжение сессии (8.1.5: в VL долгие окна получали «не закрыта» после
+#      каждого сжатия). Инбоксы — молча (сольёт /end). Маркер — молча, только если он не новость: при сжатии
+#      старше старта сессии, при возобновлении — свой. Чужой маркер новее — показать, иначе /end удалит его
+#      неразобранным. Новая сессия получает всё; окно, чей старт неизвестен, — тоже (не доказано, что видело).
+printf ' edit' >> "$WREPO/notes.md"; printf '{"timestamp":"t","session_id":"w10b"}' > "$WM"; touch -t 202601010000 "$WM"
+mkdir -p "$WREPO/System/memory/inbox_sessions"; printf 'x' > "$WREPO/System/memory/inbox_sessions/i.md"
+sig() { printf '%s%s ' "$(echo "$1" | grep -q 'RECOVERY MODE' && echo R || echo -)" "$(echo "$1" | grep -q 'СЛЕЙ ИНБОКСЫ' && echo I || echo -)"; }
+start_hook w10a >/dev/null
+W10="$(sig "$(start_hook w10a compact)")$(sig "$(start_hook w10b resume)")$(sig "$(start_hook w10c resume)")"
+start_hook w10d >/dev/null; OLD_START=$(( $(date +%s) - 7200 ))
+sed -i.bak "3s/.*/$OLD_START/" "$WREPO/.claude/live_sessions/w10d.marker"; rm -f "$WREPO/.claude/live_sessions/w10d.marker.bak"
+touch "$WM"
+W10="$W10$(sig "$(start_hook w10d compact)")$(sig "$(start_hook w10e startup)")$(sig "$(start_hook w10f compact)")"
+[ "$W10" = "-- -- R- R- RI R- " ] \
+  && ok "сжатие и возобновление молчат об уже виденном и своём; чужой новый маркер — показан; новая сессия — всё" \
+  || bad "сжатие/возобновление: [$W10], ожидалось [-- -- R- R- RI R- ] (сжатие, свой, чужой, новый при сжатии, новая, старт неизвестен)"
+rm -f "$WM"; rm -rf "$WREPO/System/memory/inbox_sessions"; ( cd "$WREPO" && git checkout -q -- notes.md )
+
+# W11) окна A и B закрылись подряд (выход или обновление приложения): маркер B не затирает файлы A и не
+#      считается «своим» для B — вернувшееся B видит RECOVERY (иначе его /end удалил бы маркер с работой A)
+start_hook w11a >/dev/null; start_hook w11b >/dev/null
+printf 'a' > "$WREPO/w11_a.txt"; end_hook_t w11a "$TS/busy.jsonl"
+printf 'b' > "$WREPO/w11_b.txt"; end_hook_t w11b "$TS/busy.jsonl"
+W11=$(python3 -c 'import json, sys; m = json.load(open(sys.argv[1], encoding="utf-8"))
+print(repr(m.get("session_id")), "w11_a.txt" in m["changed_files"], "w11_b.txt" in m["changed_files"])' "$WM" 2>&1 | tail -1)
+W11="$W11 $(sig "$(start_hook w11b resume)")"
+[ "$W11" = "'' True True R- " ] && ok "окна закрылись подряд: общий маркер хранит работу обоих, вернувшееся окно его видит" \
+  || bad "окна подряд: [$W11], ожидалось ['' True True R- ]"
+rm -f "$WM" "$WREPO/w11_a.txt" "$WREPO/w11_b.txt"
 
 echo "=== SMOKE: проверка закрытия — итог в инбоксе засчитывается (8.1.4) ==="
 # Класс бага: при законном закрытии в инбокс (рядом РАБОТАЕТ другая сессия) Блок 1 close_session_check

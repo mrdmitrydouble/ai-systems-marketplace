@@ -1,5 +1,5 @@
 #!/bin/bash
-# session_end_snapshot.sh — SessionEnd hook (v3: marker-only + durable stash-ref)
+# session_end_snapshot.sh — SessionEnd hook (v3: marker-only + durable stash-ref; v4.3: работа соседей — не своя)
 # Срабатывает при закрытии сессии (включая закрытие окна без /end).
 #
 # ДИЗАЙН (research 2026-06-16; прецеденты JetBrains Local History / VS Code Hot Exit / Emacs auto-save):
@@ -34,6 +34,11 @@ if [ -n "$SID" ] && [ -f ".claude/live_sessions/${SID}.dirty" ]; then
   mv ".claude/live_sessions/${SID}.dirty" "$START_SNAP" 2>/dev/null || START_SNAP=""
   [ -n "$START_SNAP" ] && trap 'rm -f "$START_SNAP"' EXIT
 fi
+# Журнал сессии — по нему видно её последнее действие (v4.3): из ввода хука, иначе строка 4 маркера.
+TRANSCRIPT=$(echo "$HOOK_INPUT" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('transcript_path',''))
+except: print('')" 2>/dev/null)
+[ -z "$TRANSCRIPT" ] && [ -n "$SID" ] && TRANSCRIPT=$(sed -n 4p ".claude/live_sessions/${SID}.marker" 2>/dev/null)
 [ -n "$SID" ] && rm -f ".claude/live_sessions/${SID}.marker" 2>/dev/null
 
 REASON=$(echo "$HOOK_INPUT" | python3 -c "import sys,json
@@ -84,6 +89,15 @@ else
     [ -z "$NEW_WORK" ] && exit 0
   }
 fi
+# v4.3 (8.1.5): сессия простаивала к концу (окно закрыли или отправили в архив через сутки после /end) —
+# правки позже её последнего действия сделали соседние сессии, это не её работа. Работала до конца —
+# всё по-прежнему её. Не удалось прочитать журнал — тоже по-прежнему.
+if [ -n "$NEW_WORK" ] && [ -n "$TRANSCRIPT" ]; then
+  OWN=$(printf '%s\n' "$NEW_WORK" | python3 System/scripts/session_liveness.py own "$TRANSCRIPT" 2>/dev/null) && {
+    NEW_WORK="$OWN"
+    [ -z "$NEW_WORK" ] && exit 0
+  }
+fi
 
 mkdir -p .claude
 TIMESTAMP_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -109,13 +123,14 @@ LAST_COMMIT=$(git log -1 --format=%H 2>/dev/null)
 # --- Маркер: пишем АТОМАРНО (temp + os.replace) и ПОСЛЕДНИМ ---
 MARKER=".claude/.session_incomplete.json"
 export SNAP_TS="$TIMESTAMP_ISO" SNAP_REASON="$REASON" SNAP_COMMIT="$LAST_COMMIT" \
-       SNAP_FILES="$CHANGED_FILES" SNAP_REF="$SNAPSHOT_REF" SNAP_MARKER="$MARKER"
+       SNAP_FILES="$CHANGED_FILES" SNAP_REF="$SNAPSHOT_REF" SNAP_MARKER="$MARKER" SNAP_SID="$SID"
 python3 <<'PYEOF'
 import json, os, tempfile
 marker = os.environ.get("SNAP_MARKER", ".claude/.session_incomplete.json")
 ref = os.environ.get("SNAP_REF", "")
 data = {
     "timestamp": os.environ.get("SNAP_TS", ""),
+    "session_id": os.environ.get("SNAP_SID", ""),   # чей маркер: вернувшаяся сессия узнаёт свой (8.1.5)
     "reason": os.environ.get("SNAP_REASON", "unknown"),
     "status": "marker_only+snapshot_ref" if ref else "marker_only",
     "last_commit": os.environ.get("SNAP_COMMIT", ""),
@@ -125,6 +140,17 @@ data = {
              "Если дерево вычищено — восстановить снапшот: git stash apply <snapshot_ref>. "
              "STARTUP/recovery: восстанови wrap-up по git log+diff и закрой через /end."),
 }
+# Маркер уже есть (окна закрылись подряд — выход или обновление приложения) — его файлы не теряем: в нём
+# может быть чужая работа. Чужой маркер → session_id пуст: вернувшееся окно не примет общий маркер за свой.
+try:
+    with open(marker, encoding="utf-8") as f:
+        prev = json.load(f)
+except Exception:
+    prev = None
+if isinstance(prev, dict):
+    if prev.get("session_id") != data["session_id"]:
+        data["session_id"] = ""
+    data["changed_files"] = sorted(set(data["changed_files"]) | set(prev.get("changed_files") or []))
 d = os.path.dirname(marker) or "."
 os.makedirs(d, exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=d, prefix=".sess_marker_", suffix=".tmp")
